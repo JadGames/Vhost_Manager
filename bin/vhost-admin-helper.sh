@@ -11,10 +11,98 @@ APACHE_DIR="/etc/apache2/sites-available"
 SITE_USER="www-data"
 DEFAULT_BASE="/var/www"
 TEMPLATE_FILE="/etc/vhost-manager/vhost.conf.tpl"
+MODULES_ALLOWLIST=(rewrite headers ssl proxy proxy_http http2 expires deflate remoteip setenvif dir alias mime)
+REQUIRED_MODULES=(rewrite)
 
 fail() {
   echo "ERROR: $1" >&2
   exit 1
+}
+
+is_allowed_module() {
+  local module="$1"
+  local allowed
+
+  for allowed in "${MODULES_ALLOWLIST[@]}"; do
+    if [[ "$allowed" == "$module" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+is_required_module() {
+  local module="$1"
+  local required
+
+  for required in "${REQUIRED_MODULES[@]}"; do
+    if [[ "$required" == "$module" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+validate_module() {
+  local module="$1"
+  [[ "$module" =~ ^[a-z0-9_]+$ ]] || fail "invalid module"
+  is_allowed_module "$module" || fail "unsupported module"
+}
+
+module_state() {
+  local module="$1"
+
+  if a2query -m "$module" >/dev/null 2>&1; then
+    echo "enabled"
+    return 0
+  fi
+
+  echo "disabled"
+}
+
+list_modules() {
+  local module
+  local state
+
+  for module in "${MODULES_ALLOWLIST[@]}"; do
+    state="$(module_state "$module")"
+    printf '%s|%s\n' "$module" "$state"
+  done
+}
+
+enable_module() {
+  local module="$1"
+
+  validate_module "$module"
+
+  if [[ "$(module_state "$module")" == "enabled" ]]; then
+    echo "ok"
+    return 0
+  fi
+
+  a2enmod "$module"
+  apache2ctl configtest
+  apache2ctl graceful
+  echo "ok"
+}
+
+disable_module() {
+  local module="$1"
+
+  validate_module "$module"
+  is_required_module "$module" && fail "module is required"
+
+  if [[ "$(module_state "$module")" == "disabled" ]]; then
+    echo "ok"
+    return 0
+  fi
+
+  a2dismod "$module"
+  apache2ctl configtest
+  apache2ctl graceful
+  echo "ok"
 }
 
 validate_domain() {
@@ -159,16 +247,27 @@ delete_site() {
   echo "ok"
 }
 
-[[ -n "$ACTION" ]] || fail "missing action"
-[[ -n "$DOMAIN" ]] || fail "missing domain"
-validate_domain "$DOMAIN"
-
 case "$ACTION" in
+  list-modules)
+    list_modules
+    ;;
+  enable-module)
+    [[ -n "$DOMAIN" ]] || fail "missing module"
+    enable_module "$DOMAIN"
+    ;;
+  disable-module)
+    [[ -n "$DOMAIN" ]] || fail "missing module"
+    disable_module "$DOMAIN"
+    ;;
   create)
+    [[ -n "$DOMAIN" ]] || fail "missing domain"
+    validate_domain "$DOMAIN"
     [[ -n "$ARG3" ]] || fail "missing docroot"
     create_site "$DOMAIN" "$ARG3" "${ARG4:-/var/www}"
     ;;
   delete)
+    [[ -n "$DOMAIN" ]] || fail "missing domain"
+    validate_domain "$DOMAIN"
     if [[ "$ARG3" != "0" && "$ARG3" != "1" ]]; then
       fail "delete flag must be 0 or 1"
     fi

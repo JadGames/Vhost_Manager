@@ -13,6 +13,8 @@
         <div class="confirm-card">
             <h3 class="confirm-card-title">Admin Account</h3>
             <div class="confirm-grid">
+                <strong>Full Name:</strong>
+                <span><?= e((string) $summary['admin_full_name']) ?></span>
                 <strong>Email:</strong>
                 <span><?= e((string) $summary['admin_email']) ?></span>
                 <strong>Password:</strong>

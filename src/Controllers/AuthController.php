@@ -25,7 +25,7 @@ final class AuthController extends BaseController
     public function showLogin(): void
     {
         if (Session::isAuthenticated()) {
-            $this->redirect('dashboard');
+            $this->redirect('overview');
         }
 
         $this->render('auth/login.php', [
@@ -54,7 +54,7 @@ final class AuthController extends BaseController
         Session::login($email);
         $this->handleDocrootDetectionAfterLogin();
         Session::setFlash('success', 'Logged in successfully.');
-        $this->redirect('dashboard');
+        $this->redirect('overview');
     }
 
     private function handleDocrootDetectionAfterLogin(): void
@@ -91,7 +91,7 @@ final class AuthController extends BaseController
     {
         if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
             Session::setFlash('error', 'Invalid CSRF token.');
-            $this->redirect('dashboard');
+            $this->redirect('overview');
         }
 
         Session::logout();

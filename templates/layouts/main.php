@@ -38,30 +38,40 @@
 <?php else: ?>
 
     <?php
-        $currentRoute = (string) ($_GET['route'] ?? 'dashboard');
+        $currentRoute = (string) ($_GET['route'] ?? 'overview');
         $ctxDomain    = !empty($_GET['domain']) ? ' · ' . e((string) $_GET['domain']) : '';
         $pageTitles   = [
-            'dashboard'    => 'Virtual Hosts',
-            'create-vhost' => 'Create Virtual Host',
-            'edit-vhost'   => 'Edit Virtual Host',
-            'delete-vhost' => 'Delete Virtual Host',
-            'logs' => 'System Logs',
-            'settings'     => 'Settings Overview',
-            'settings-users' => 'Users',
-            'settings-cloudflare' => 'Cloudflare Settings',
+            'overview'                    => 'Overview',
+            'domains'                     => 'Domains',
+            'vhosts'                      => 'Virtual Hosts',
+            'dashboard'                   => 'Virtual Hosts',
+            'create-vhost'                => 'Create Virtual Host',
+            'edit-vhost'                  => 'Edit Virtual Host',
+            'delete-vhost'                => 'Delete Virtual Host',
+            'logs'                        => 'System Logs',
+            'settings'                    => 'Settings Overview',
+            'settings-users'              => 'Users',
+            'settings-integrations'       => 'Integrations',
+            'settings-cloudflare'         => 'Cloudflare Settings',
             'settings-cloudflare-domains' => 'Cloudflare Domains',
-            'settings-npm' => 'NPM Settings',
-            'settings-npm-ssl' => 'NPM SSL Settings',
+            'settings-npm'                => 'NPM Settings',
+            'settings-npm-ssl'            => 'NPM SSL Settings',
+            'settings-apache-modules'     => 'Apache Modules',
         ];
-        $pageTitle = e($pageTitles[$currentRoute] ?? 'VHost Manager');
+        $pageTitle = e($pageTitles[$currentRoute] ?? ucwords(str_replace(['-', '_'], ' ', $currentRoute)));
         if ($currentRoute === 'edit-vhost' || $currentRoute === 'delete-vhost') {
             $pageTitle .= $ctxDomain;
         }
+
+        $settingsRoutes = ['settings', 'settings-users', 'settings-integrations',
+            'settings-cloudflare', 'settings-cloudflare-domains',
+            'settings-npm', 'settings-npm-ssl', 'settings-apache-modules', 'logs'];
+        $vhostRoutes = ['vhosts', 'dashboard', 'create-vhost', 'edit-vhost', 'delete-vhost'];
     ?>
 
     <div class="layout">
 
-        <!-- ── Sidebar ── -->
+        <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
 
             <div class="sidebar-header">
@@ -75,26 +85,28 @@
             </div>
 
             <nav class="sidebar-nav" aria-label="Main navigation">
-                <a href="/?route=dashboard"
-                   class="nav-item <?= $currentRoute === 'dashboard' ? 'is-active' : '' ?>"
-                   title="Dashboard">
+
+                <a href="/?route=overview"
+                   class="nav-item <?= $currentRoute === 'overview' ? 'is-active' : '' ?>"
+                   title="Overview">
                     <i class="fa-solid fa-gauge nav-icon"></i>
-                    <span class="nav-label">Dashboard</span>
-                </a>
-                <a href="/?route=create-vhost"
-                   class="nav-item <?= $currentRoute === 'create-vhost' ? 'is-active' : '' ?>"
-                   title="Create VHost">
-                    <i class="fa-solid fa-circle-plus nav-icon"></i>
-                    <span class="nav-label">Create VHost</span>
-                </a>
-                <a href="/?route=logs"
-                   class="nav-item <?= $currentRoute === 'logs' ? 'is-active' : '' ?>"
-                   title="Logs">
-                    <i class="fa-solid fa-clipboard-list nav-icon"></i>
-                    <span class="nav-label">Logs</span>
+                    <span class="nav-label">Overview</span>
                 </a>
 
-                <?php $settingsRoutes = ['settings', 'settings-users', 'settings-cloudflare', 'settings-cloudflare-domains', 'settings-npm', 'settings-npm-ssl']; ?>
+                <a href="/?route=domains"
+                   class="nav-item <?= $currentRoute === 'domains' ? 'is-active' : '' ?>"
+                   title="Domains">
+                    <i class="fa-solid fa-globe nav-icon"></i>
+                    <span class="nav-label">Domains</span>
+                </a>
+
+                <a href="/?route=vhosts"
+                   class="nav-item <?= in_array($currentRoute, $vhostRoutes, true) ? 'is-active' : '' ?>"
+                   title="Vhosts">
+                    <i class="fa-solid fa-server nav-icon"></i>
+                    <span class="nav-label">Vhosts</span>
+                </a>
+
                 <div class="nav-group">
                     <a href="/?route=settings"
                        class="nav-item <?= in_array($currentRoute, $settingsRoutes, true) ? 'is-active' : '' ?>"
@@ -102,23 +114,26 @@
                         <i class="fa-solid fa-gear nav-icon"></i>
                         <span class="nav-label">Settings</span>
                     </a>
-
                     <div class="nav-submenu">
-                        <a href="/?route=settings-users" class="nav-submenu-item <?= $currentRoute === 'settings-users' ? 'is-active' : '' ?>">Users</a>
-                        <a href="/?route=settings-cloudflare" class="nav-submenu-item <?= $currentRoute === 'settings-cloudflare' ? 'is-active' : '' ?>">Cloudflare Settings</a>
-                        <a href="/?route=settings-cloudflare-domains" class="nav-submenu-item nav-submenu-item--nested <?= $currentRoute === 'settings-cloudflare-domains' ? 'is-active' : '' ?>">Domains</a>
-                        <a href="/?route=settings-npm" class="nav-submenu-item <?= $currentRoute === 'settings-npm' ? 'is-active' : '' ?>">NPM Settings</a>
-                        <a href="/?route=settings-npm-ssl" class="nav-submenu-item nav-submenu-item--nested <?= $currentRoute === 'settings-npm-ssl' ? 'is-active' : '' ?>">SSL Settings</a>
+                        <a href="/?route=settings-users"
+                           class="nav-submenu-item <?= $currentRoute === 'settings-users' ? 'is-active' : '' ?>">Users</a>
+                        <a href="/?route=settings-apache-modules"
+                           class="nav-submenu-item <?= $currentRoute === 'settings-apache-modules' ? 'is-active' : '' ?>">Apache Modules</a>
+                        <a href="/?route=settings-integrations"
+                           class="nav-submenu-item <?= in_array($currentRoute, ['settings-integrations', 'settings-cloudflare', 'settings-cloudflare-domains', 'settings-npm', 'settings-npm-ssl'], true) ? 'is-active' : '' ?>">Integrations</a>
+                        <a href="/?route=logs"
+                           class="nav-submenu-item <?= $currentRoute === 'logs' ? 'is-active' : '' ?>">Logs</a>
                     </div>
                 </div>
+
             </nav>
 
             <div class="sidebar-footer">
                 <div class="user-card">
-                    <div class="user-avatar"><?= strtoupper(substr((string) $username, 0, 1)) ?></div>
+                    <div class="user-avatar"><?= strtoupper(substr((string) ($displayName ?? $username), 0, 1)) ?></div>
                     <div class="user-info">
-                        <div class="user-name"><?= e((string) $username) ?></div>
-                        <div class="user-role">Administrator</div>
+                        <div class="user-name"><?= e((string) ($displayName ?? $username)) ?></div>
+                        <div class="user-role"><?= e((string) ($accountRole ?? 'User')) ?></div>
                     </div>
                 </div>
                 <div class="sidebar-actions">
@@ -142,7 +157,7 @@
         <!-- Mobile overlay -->
         <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
-        <!-- ── Main ── -->
+        <!-- Main -->
         <div class="main-wrapper" id="mainWrapper">
 
             <header class="topbar">
@@ -151,7 +166,7 @@
                 </button>
                 <div class="topbar-breadcrumb"><?= $pageTitle ?></div>
                 <div class="topbar-right">
-                    <?php if ($currentRoute !== 'create-vhost'): ?>
+                    <?php if (in_array($currentRoute, ['vhosts', 'dashboard'], true)): ?>
                         <a href="/?route=create-vhost" class="btn btn--primary btn--sm">
                             <i class="fa-solid fa-plus"></i>
                             <span>New VHost</span>
@@ -173,50 +188,52 @@
 
             <?php if (is_array($docrootDetection ?? null)): ?>
                 <?php
-                    $detectedNewBases = is_array($docrootDetection['new_bases'] ?? null) ? $docrootDetection['new_bases'] : [];
+                    $detectedNewBases     = is_array($docrootDetection['new_bases'] ?? null) ? $docrootDetection['new_bases'] : [];
                     $detectedAllowedBases = is_array($docrootDetection['allowed_bases'] ?? null) ? $docrootDetection['allowed_bases'] : [];
-                    $detectedDefaultBase = (string) ($docrootDetection['default_base'] ?? '');
+                    $detectedDefaultBase  = (string) ($docrootDetection['default_base'] ?? '');
                 ?>
                 <?php if ($detectedNewBases !== [] && $detectedAllowedBases !== []): ?>
                     <dialog id="docroot-detection-dialog" data-auto-open="true">
-                        <p class="dialog-title">New Docroot Base Detected</p>
-                        <p class="dialog-subtitle">Vhost Manager detected new document-root base path(s) from compose:</p>
-                        <ul class="password-policy" style="margin-top: 0; margin-bottom: 12px;">
-                            <?php foreach ($detectedNewBases as $base): ?>
-                                <li class="is-valid"><?= e((string) $base) ?></li>
-                            <?php endforeach; ?>
-                        </ul>
-
-                        <form class="form" method="post" action="/?route=settings-docroot-detection-action" autocomplete="off">
-                            <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
-                            <input type="hidden" name="intent" value="set-default-base">
-
-                            <div class="form-group" style="margin-bottom: 12px;">
-                                <label class="form-label" for="docroot_detect_default_base">Default Docroot Base</label>
-                                <select class="form-select" id="docroot_detect_default_base" name="default_docroot_base">
-                                    <?php foreach ($detectedAllowedBases as $base): ?>
-                                        <?php $base = (string) $base; ?>
-                                        <option value="<?= e($base) ?>" <?= $base === $detectedDefaultBase ? 'selected' : '' ?>>
-                                            <?= e($base) ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
+                        <div class="dialog-header">
+                            <div class="dialog-header-text">
+                                <p class="dialog-title">New Docroot Base Detected</p>
+                                <p class="dialog-subtitle">Vhost Manager detected new document-root base path(s) from compose:</p>
                             </div>
-
-                            <div class="btn-group">
-                                <button class="btn btn--primary" type="submit">
-                                    <i class="fa-solid fa-floppy-disk"></i>
-                                    Update Default Base
-                                </button>
-                                <button class="btn btn--ghost" id="docroot-detection-keep" type="button">Keep Current</button>
-                            </div>
-                        </form>
-
-                        <form method="post" action="/?route=settings-docroot-detection-action" autocomplete="off" style="margin-top: 10px;">
-                            <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
-                            <input type="hidden" name="intent" value="disable-notifications">
-                            <button class="btn btn--ghost" type="submit">Disable future detection prompts</button>
-                        </form>
+                        </div>
+                        <div class="dialog-body">
+                            <ul class="password-policy" style="margin-top: 0; margin-bottom: 12px;">
+                                <?php foreach ($detectedNewBases as $base): ?>
+                                    <li class="is-valid"><?= e((string) $base) ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                            <form class="form" method="post" action="/?route=settings-docroot-detection-action" autocomplete="off">
+                                <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
+                                <input type="hidden" name="intent" value="set-default-base">
+                                <div class="form-group" style="margin-bottom: 12px;">
+                                    <label class="form-label" for="docroot_detect_default_base">Default Docroot Base</label>
+                                    <select class="form-select" id="docroot_detect_default_base" name="default_docroot_base">
+                                        <?php foreach ($detectedAllowedBases as $base): ?>
+                                            <?php $base = (string) $base; ?>
+                                            <option value="<?= e($base) ?>" <?= $base === $detectedDefaultBase ? 'selected' : '' ?>>
+                                                <?= e($base) ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="btn-group">
+                                    <button class="btn btn--primary" type="submit">
+                                        <i class="fa-solid fa-floppy-disk"></i>
+                                        Update Default Base
+                                    </button>
+                                    <button class="btn btn--ghost" id="docroot-detection-keep" type="button">Keep Current</button>
+                                </div>
+                            </form>
+                            <form method="post" action="/?route=settings-docroot-detection-action" autocomplete="off" style="margin-top: 10px;">
+                                <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
+                                <input type="hidden" name="intent" value="disable-notifications">
+                                <button class="btn btn--ghost" type="submit">Disable future detection prompts</button>
+                            </form>
+                        </div>
                     </dialog>
                 <?php endif; ?>
             <?php endif; ?>

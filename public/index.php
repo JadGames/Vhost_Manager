@@ -13,6 +13,7 @@ use App\Core\Session;
 use App\Security\Csrf;
 use App\Security\RateLimiter;
 use App\Services\AuthService;
+use App\Services\ApacheModulesService;
 use App\Services\CloudflareService;
 use App\Services\HttpClient;
 use App\Services\Logger;
@@ -92,10 +93,13 @@ if (@date_default_timezone_set($timezone) === false) {
 
 Session::start($config);
 
+$cspNonce = base64_encode(random_bytes(16));
+$_SERVER['CSP_NONCE'] = $cspNonce;
+
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
 header('Referrer-Policy: no-referrer');
-header("Content-Security-Policy: default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; font-src 'self' https://cdnjs.cloudflare.com https://fonts.gstatic.com; img-src 'self' data:");
+header("Content-Security-Policy: default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'nonce-{$cspNonce}'; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; font-src 'self' https://cdnjs.cloudflare.com https://fonts.gstatic.com; img-src 'self' data:");
 
 $logger = new Logger($config->get('LOG_FILE', __DIR__ . '/../storage/logs/app.log'));
 $csrf = new Csrf();
@@ -105,7 +109,7 @@ $rateLimiter = new RateLimiter(
     900,
     900
 );
-$authService = new AuthService($config, $rateLimiter, $logger);
+$authService = new AuthService($config, $rateLimiter, $logger, $settingsStore);
 $vhostRepository = new VhostRepository(
     $config->get('MANAGED_VHOSTS_FILE', __DIR__ . '/../storage/data/vhosts.json')
 );
@@ -119,14 +123,15 @@ $npm = $config->getBool('NPM_ENABLED', false)
     : null;
 
 $vhostService = new VhostService($config, $logger, $vhostRepository, $cloudflare, $npm);
+ $apacheModulesService = new ApacheModulesService($config);
 
 $authController = new AuthController($config, $authService, $csrf, $settingsStore);
 $setupController = new SetupController($config, $csrf, $settingsStore, $httpClient);
-$vhostController = new VhostController($config, $csrf, $vhostService);
-$settingsController = new SettingsController($config, $csrf, $settingsStore);
+$vhostController = new VhostController($config, $csrf, $vhostService, $apacheModulesService);
+$settingsController = new SettingsController($config, $csrf, $settingsStore, $apacheModulesService);
 $logsController = new LogsController($config, $csrf);
 
-$route = $_GET['route'] ?? 'dashboard';
+$route = $_GET['route'] ?? 'overview';
 $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
 
 $isSetupComplete = trim((string) $config->get('ADMIN_USER', '')) !== ''
@@ -212,9 +217,49 @@ try {
             $vhostController->showEditForm();
             break;
 
+        case 'overview':
+            Session::requireAuth();
+            $vhostController->showOverview();
+            break;
+
+        case 'domains':
+            Session::requireAuth();
+            $vhostController->showDomains();
+            break;
+
+        case 'vhosts':
+            Session::requireAuth();
+            $vhostController->dashboard();
+            break;
+
         case 'settings':
             Session::requireAuth();
             $settingsController->show();
+            break;
+
+        case 'settings-integrations':
+            Session::requireAuth();
+            $settingsController->showIntegrations();
+            break;
+
+        case 'settings-integrations-action':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $settingsController->integrationsAction();
+                break;
+            }
+            header('Location: /?route=settings-integrations');
+            exit;
+            break;
+
+        case 'settings-integrations-test':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $settingsController->integrationsTestAction();
+                break;
+            }
+            header('Location: /?route=settings-integrations');
+            exit;
             break;
 
         case 'settings-save-general':
@@ -300,6 +345,21 @@ try {
         case 'settings-npm-ssl':
             Session::requireAuth();
             $settingsController->showNpmSsl();
+            break;
+
+        case 'settings-apache-modules':
+            Session::requireAuth();
+            $settingsController->showApacheModules();
+            break;
+
+        case 'settings-apache-modules-action':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $settingsController->apacheModulesAction();
+                break;
+            }
+            header('Location: /?route=settings-apache-modules');
+            exit;
             break;
 
         case 'settings-npm-ssl-save':

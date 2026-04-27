@@ -7,6 +7,11 @@ namespace App\Controllers;
 use App\Core\Config;
 use App\Core\Session;
 use App\Security\Csrf;
+use App\Services\ApacheModulesService;
+use App\Services\HttpClient;
+use App\Services\IntegrationRegistry;
+use App\Services\Logger;
+use App\Services\NpmService;
 use App\Security\DomainValidator;
 use App\Services\SettingsStore;
 use RuntimeException;
@@ -16,7 +21,8 @@ final class SettingsController extends BaseController
     public function __construct(
         Config $config,
         private readonly Csrf $csrf,
-        private readonly SettingsStore $settingsStore
+        private readonly SettingsStore $settingsStore,
+        private readonly ApacheModulesService $apacheModules
     ) {
         parent::__construct($config);
     }
@@ -24,21 +30,242 @@ final class SettingsController extends BaseController
     public function show(): void
     {
         $allowedDocrootBases = $this->allowedDocrootBases();
+        $apacheModules = [];
+        $additionalUsers = $this->usersFromStore();
+        $integrations = $this->integrationsFromStore();
+
+        try {
+            $apacheModules = $this->apacheModules->listModules();
+        } catch (RuntimeException) {
+            $apacheModules = [];
+        }
+
+        $enabledModuleCount = count(array_filter(
+            $apacheModules,
+            static fn (array $module): bool => !empty($module['enabled'])
+        ));
 
         $this->render('settings/index.php', [
             'csrfToken' => $this->csrf->token(),
             'appUrl' => (string) $this->config->get('APP_URL', 'http://localhost'),
             'appHttps' => $this->config->getBool('APP_HTTPS', false),
-            'sessionName' => (string) $this->config->get('SESSION_NAME', 'VHMSESSID'),
-            'sessionIdleTimeout' => (int) $this->config->get('SESSION_IDLE_TIMEOUT', 1800),
             'allowedDocrootBases' => $allowedDocrootBases,
             'defaultDocrootBase' => (string) $this->config->get('DEFAULT_DOCROOT_BASE', '/var/www'),
             'baseDomain' => (string) $this->config->get('VHOST_BASE_DOMAIN', ''),
+            'domainOptions' => $this->domainOptionsFromStore(),
+            'adminUser' => (string) $this->config->get('ADMIN_USER', 'admin@example.com'),
+            'additionalUsers' => $additionalUsers,
             'cfEnabled' => $this->config->getBool('CF_ENABLED', false),
             'npmEnabled' => $this->config->getBool('NPM_ENABLED', false),
-            'usersCount' => count($this->usersFromStore()),
+            'usersCount' => count($additionalUsers),
             'cfDomainMappingsCount' => count($this->cloudflareDomainsFromStore()),
+            'apacheModulesCount' => count($apacheModules),
+            'apacheModules' => $apacheModules,
+            'enabledModuleCount' => $enabledModuleCount,
+            'integrations' => $integrations,
         ]);
+    }
+
+    public function showIntegrations(): void
+    {
+        $integrations = $this->integrationsFromStore();
+
+        $this->render('settings/integrations.php', [
+            'csrfToken' => $this->csrf->token(),
+            'providers' => IntegrationRegistry::providers(),
+            'integrations' => $integrations,
+            'proxyIntegrations' => IntegrationRegistry::filterByCategory($integrations, 'proxy'),
+            'dnsIntegrations' => IntegrationRegistry::filterByCategory($integrations, 'dns'),
+        ]);
+    }
+
+    public function integrationsAction(): void
+    {
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            Session::setFlash('error', 'Invalid CSRF token.');
+            $this->redirect('settings-integrations');
+        }
+
+        $integrations = $this->integrationsFromStore();
+        $providers = IntegrationRegistry::providers();
+        $intent = trim((string) ($_POST['intent'] ?? ''));
+
+        try {
+            switch ($intent) {
+                case 'add':
+                    $providerKey = trim((string) ($_POST['provider'] ?? ''));
+                    if (!isset($providers[$providerKey])) {
+                        throw new RuntimeException('Invalid integration provider.');
+                    }
+
+                    $name = trim((string) ($_POST['name'] ?? ''));
+                    if ($name === '') {
+                        throw new RuntimeException('Integration name is required.');
+                    }
+
+                    $integrations[] = [
+                        'id' => str_replace('.', '', uniqid($providerKey . '_', true)),
+                        'name' => $name,
+                        'provider' => $providerKey,
+                        'category' => (string) $providers[$providerKey]['category'],
+                        'settings' => $this->normalizeIntegrationSettings(
+                            $providerKey,
+                            is_array($_POST['settings'] ?? null) ? $_POST['settings'] : []
+                        ),
+                    ];
+                    Session::setFlash('success', 'Integration added.');
+                    break;
+
+                case 'update':
+                    $id = trim((string) ($_POST['id'] ?? ''));
+                    $name = trim((string) ($_POST['name'] ?? ''));
+                    if ($id === '') {
+                        throw new RuntimeException('Integration ID is required.');
+                    }
+                    if ($name === '') {
+                        throw new RuntimeException('Integration name is required.');
+                    }
+
+                    $index = null;
+                    foreach ($integrations as $candidateIndex => $integration) {
+                        if ((string) ($integration['id'] ?? '') === $id) {
+                            $index = $candidateIndex;
+                            break;
+                        }
+                    }
+
+                    if ($index === null) {
+                        throw new RuntimeException('Integration not found.');
+                    }
+
+                    $existing = $integrations[$index];
+                    $providerKey = (string) ($existing['provider'] ?? '');
+                    if (!isset($providers[$providerKey])) {
+                        throw new RuntimeException('Invalid integration provider.');
+                    }
+
+                    $integrations[$index] = [
+                        'id' => $id,
+                        'name' => $name,
+                        'provider' => $providerKey,
+                        'category' => (string) $providers[$providerKey]['category'],
+                        'settings' => $this->normalizeIntegrationSettings(
+                            $providerKey,
+                            is_array($_POST['settings'] ?? null) ? $_POST['settings'] : [],
+                            is_array($existing['settings'] ?? null) ? $existing['settings'] : []
+                        ),
+                    ];
+                    Session::setFlash('success', 'Integration updated.');
+                    break;
+
+                case 'delete':
+                    $id = trim((string) ($_POST['id'] ?? ''));
+                    if ($id === '') {
+                        throw new RuntimeException('Integration ID is required.');
+                    }
+
+                    $remaining = array_values(array_filter(
+                        $integrations,
+                        static fn (array $integration): bool => (string) ($integration['id'] ?? '') !== $id
+                    ));
+
+                    if (count($remaining) === count($integrations)) {
+                        throw new RuntimeException('Integration not found.');
+                    }
+
+                    $integrations = $remaining;
+                    Session::setFlash('success', 'Integration removed.');
+                    break;
+
+                default:
+                    throw new RuntimeException('Invalid integrations action.');
+            }
+
+            usort($integrations, static function (array $a, array $b): int {
+                $categoryCompare = strcmp((string) ($a['category'] ?? ''), (string) ($b['category'] ?? ''));
+                if ($categoryCompare !== 0) {
+                    return $categoryCompare;
+                }
+
+                return strcasecmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+            });
+
+            $this->persistIntegrations($integrations);
+        } catch (RuntimeException $e) {
+            Session::setFlash('error', $e->getMessage());
+        }
+
+        $this->redirect('settings-integrations');
+    }
+
+    public function integrationsTestAction(): void
+    {
+        header('Content-Type: application/json');
+
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        $id = trim((string) ($_POST['id'] ?? ''));
+        foreach ($this->integrationsFromStore() as $integration) {
+            if ((string) ($integration['id'] ?? '') !== $id) {
+                continue;
+            }
+
+            try {
+                $this->testIntegration($integration);
+                echo json_encode(['ok' => true]);
+            } catch (RuntimeException $e) {
+                http_response_code(422);
+                echo json_encode(['ok' => false, 'message' => $e->getMessage()]);
+            }
+
+            return;
+        }
+
+        http_response_code(404);
+        echo json_encode(['ok' => false, 'message' => 'Integration not found.']);
+    }
+
+    public function showApacheModules(): void
+    {
+        try {
+            $modules = $this->apacheModules->listModules();
+        } catch (RuntimeException $e) {
+            Session::setFlash('error', $e->getMessage());
+            $modules = [];
+        }
+
+        $requiredCount = count(array_filter($modules, static fn (array $module): bool => !empty($module['required'])));
+
+        $this->render('settings/apache-modules.php', [
+            'csrfToken' => $this->csrf->token(),
+            'modules' => $modules,
+            'requiredCount' => $requiredCount,
+        ]);
+    }
+
+    public function apacheModulesAction(): void
+    {
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            Session::setFlash('error', 'Invalid CSRF token.');
+            $this->redirect('settings-apache-modules');
+        }
+
+        $module = trim((string) ($_POST['module'] ?? ''));
+        $enabled = isset($_POST['enabled']) && (string) $_POST['enabled'] === '1';
+
+        try {
+            $this->apacheModules->setEnabled($module, $enabled);
+        } catch (RuntimeException $e) {
+            Session::setFlash('error', $e->getMessage());
+            $this->redirect('settings-apache-modules');
+        }
+
+        Session::setFlash('success', sprintf('Apache module %s %s.', $module, $enabled ? 'enabled' : 'disabled'));
+        $this->redirect('settings-apache-modules');
     }
 
     public function saveGeneral(): void
@@ -50,8 +277,6 @@ final class SettingsController extends BaseController
 
         $appUrl = trim((string) ($_POST['app_url'] ?? ''));
         $appHttps = $this->postBool('app_https');
-        $sessionName = trim((string) ($_POST['session_name'] ?? ''));
-        $sessionIdleTimeout = (int) ($_POST['session_idle_timeout'] ?? 1800);
         $allowedDocrootBasesRaw = $_POST['allowed_docroot_bases'] ?? [];
         $defaultDocrootBase = trim((string) ($_POST['default_docroot_base'] ?? ''));
         $baseDomain = strtolower(trim((string) ($_POST['vhost_base_domain'] ?? '')));
@@ -61,18 +286,14 @@ final class SettingsController extends BaseController
             $this->redirect('settings');
         }
 
-        if (!preg_match('/^[A-Za-z0-9_-]{3,40}$/', $sessionName)) {
-            Session::setFlash('error', 'Session name must be 3-40 characters and use letters, numbers, underscores or dashes.');
-            $this->redirect('settings');
-        }
-
-        if ($sessionIdleTimeout < 300 || $sessionIdleTimeout > 86400) {
-            Session::setFlash('error', 'Session idle timeout must be between 300 and 86400 seconds.');
-            $this->redirect('settings');
-        }
-
         if ($baseDomain !== '' && !DomainValidator::isValid($baseDomain)) {
             Session::setFlash('error', 'Base domain must be a valid domain name.');
+            $this->redirect('settings');
+        }
+
+        $domainOptions = $this->domainOptionsFromStore();
+        if ($baseDomain !== '' && $domainOptions !== [] && !in_array($baseDomain, $domainOptions, true)) {
+            Session::setFlash('error', 'Default base domain must be selected from the available domain list.');
             $this->redirect('settings');
         }
 
@@ -91,8 +312,6 @@ final class SettingsController extends BaseController
             $this->settingsStore->setMany([
                 'APP_URL' => $appUrl,
                 'APP_HTTPS' => $appHttps ? 'true' : 'false',
-                'SESSION_NAME' => $sessionName,
-                'SESSION_IDLE_TIMEOUT' => (string) $sessionIdleTimeout,
                 'ALLOWED_DOCROOT_BASES' => implode(',', $bases),
                 'DEFAULT_DOCROOT_BASE' => $defaultDocrootBase,
                 'VHOST_BASE_DOMAIN' => $baseDomain,
@@ -192,11 +411,12 @@ final class SettingsController extends BaseController
 
     public function showUsers(): void
     {
-        $adminUser = (string) $this->config->get('ADMIN_USER', 'admin@example.com');
+        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
         $this->render('settings/users.php', [
             'csrfToken' => $this->csrf->token(),
             'adminUser' => $adminUser,
-            'users' => $this->usersFromStore(),
+            'currentUser' => strtolower(trim((string) ($_SESSION['username'] ?? ''))),
+            'userRecords' => $this->userRecordsFromStore(),
         ]);
     }
 
@@ -214,6 +434,9 @@ final class SettingsController extends BaseController
                 case 'admin-update':
                     $this->handleAdminUsernameUpdate();
                     break;
+                case 'user-update':
+                    $this->handleUserUpdateProfile();
+                    break;
                 case 'user-add':
                     $this->handleUserAdd();
                     break;
@@ -222,6 +445,12 @@ final class SettingsController extends BaseController
                     break;
                 case 'user-delete':
                     $this->handleUserDelete();
+                    break;
+                case 'user-toggle-status':
+                    $this->handleUserToggleStatus();
+                    break;
+                case 'user-toggle-role':
+                    $this->handleUserToggleRole();
                     break;
                 default:
                     throw new RuntimeException('Invalid users action.');
@@ -574,6 +803,238 @@ final class SettingsController extends BaseController
     }
 
     /**
+     * @return list<array{id:string,name:string,provider:string,category:string,settings:array<string,string>}>
+     */
+    private function integrationsFromStore(): array
+    {
+        $raw = (string) $this->config->get('INTEGRATIONS_JSON', '');
+        if ($raw === '') {
+            $migrated = $this->migrateOldIntegrations();
+            if ($migrated !== []) {
+                $this->persistIntegrations($migrated);
+            }
+
+            return $migrated;
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $providers = IntegrationRegistry::providers();
+        $integrations = [];
+
+        foreach ($decoded as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $id = trim((string) ($entry['id'] ?? ''));
+            $name = trim((string) ($entry['name'] ?? ''));
+            $providerKey = trim((string) ($entry['provider'] ?? ''));
+            if ($id === '' || $name === '' || !isset($providers[$providerKey])) {
+                continue;
+            }
+
+            $integrations[] = [
+                'id' => $id,
+                'name' => $name,
+                'provider' => $providerKey,
+                'category' => (string) $providers[$providerKey]['category'],
+                'settings' => $this->normalizeIntegrationSettings(
+                    $providerKey,
+                    is_array($entry['settings'] ?? null) ? $entry['settings'] : [],
+                    []
+                ),
+            ];
+        }
+
+        return $integrations;
+    }
+
+    /**
+     * @return list<array{id:string,name:string,provider:string,category:string,settings:array<string,string>}>
+     */
+    private function migrateOldIntegrations(): array
+    {
+        $providers = IntegrationRegistry::providers();
+        $integrations = [];
+
+        $npmBaseUrl = trim((string) $this->config->get('NPM_BASE_URL', ''));
+        $npmIdentity = trim((string) $this->config->get('NPM_IDENTITY', ''));
+        $npmSecret = trim((string) $this->config->get('NPM_SECRET', ''));
+        if ($npmBaseUrl !== '' && $npmIdentity !== '' && $npmSecret !== '') {
+            $integrations[] = [
+                'id' => 'npm_legacy',
+                'name' => 'Nginx Proxy Manager',
+                'provider' => 'npm',
+                'category' => (string) $providers['npm']['category'],
+                'settings' => [
+                    'base_url' => $npmBaseUrl,
+                    'identity' => $npmIdentity,
+                    'secret' => $npmSecret,
+                    'forward_host' => trim((string) $this->config->get('NPM_FORWARD_HOST', '127.0.0.1')),
+                    'forward_port' => (string) $this->config->get('NPM_FORWARD_PORT', '80'),
+                ],
+            ];
+        }
+
+        $cfApiToken = trim((string) $this->config->get('CF_API_TOKEN', ''));
+        $cfZoneId = trim((string) $this->config->get('CF_ZONE_ID', ''));
+        $cfRecordIp = trim((string) $this->config->get('CF_RECORD_IP', ''));
+        if ($cfApiToken !== '' && $cfZoneId !== '' && $cfRecordIp !== '') {
+            $integrations[] = [
+                'id' => 'cloudflare_legacy',
+                'name' => 'Cloudflare',
+                'provider' => 'cloudflare',
+                'category' => (string) $providers['cloudflare']['category'],
+                'settings' => [
+                    'api_token' => $cfApiToken,
+                    'zone_id' => $cfZoneId,
+                    'record_ip' => $cfRecordIp,
+                    'ttl' => (string) $this->config->get('CF_TTL', '120'),
+                    'proxied' => $this->config->getBool('CF_PROXIED', false) ? '1' : '0',
+                ],
+            ];
+        }
+
+        return $integrations;
+    }
+
+    /**
+     * @param list<array{id:string,name:string,provider:string,category:string,settings:array<string,string>}> $integrations
+     */
+    private function persistIntegrations(array $integrations): void
+    {
+        $this->settingsStore->setMany([
+            'INTEGRATIONS_JSON' => json_encode($integrations, JSON_UNESCAPED_SLASHES) ?: '[]',
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @param array<string, mixed>|null $existingSettings
+     * @return array<string, string>
+     */
+    private function normalizeIntegrationSettings(string $providerKey, array $input, ?array $existingSettings = null): array
+    {
+        $providers = IntegrationRegistry::providers();
+        if (!isset($providers[$providerKey])) {
+            throw new RuntimeException('Invalid integration provider.');
+        }
+
+        $settings = [];
+        foreach ($providers[$providerKey]['fields'] as $field) {
+            $fieldName = (string) $field['name'];
+
+            if ((string) $field['type'] === 'checkbox') {
+                $value = isset($input[$fieldName]) && (string) $input[$fieldName] === '1' ? '1' : '0';
+            } else {
+                $value = trim((string) ($input[$fieldName] ?? ''));
+                if ((string) $field['type'] === 'password' && $value === '' && $existingSettings !== null) {
+                    $value = trim((string) ($existingSettings[$fieldName] ?? ''));
+                }
+                if ($value === '' && isset($field['default'])) {
+                    $value = (string) $field['default'];
+                }
+            }
+
+            if (!empty($field['required']) && $value === '') {
+                throw new RuntimeException(sprintf('%s is required.', (string) $field['label']));
+            }
+
+            $settings[$fieldName] = $value;
+        }
+
+        if ($providerKey === 'npm') {
+            if (filter_var($settings['base_url'] ?? '', FILTER_VALIDATE_URL) === false) {
+                throw new RuntimeException('NPM Base URL must be a valid URL.');
+            }
+            if (filter_var($settings['identity'] ?? '', FILTER_VALIDATE_EMAIL) === false) {
+                throw new RuntimeException('NPM identity must be a valid email address.');
+            }
+            if (($settings['forward_host'] ?? '') === '' || preg_match('/^[a-zA-Z0-9.-]+$/', $settings['forward_host']) !== 1) {
+                throw new RuntimeException('NPM forward host contains invalid characters.');
+            }
+
+            $forwardPort = (int) ($settings['forward_port'] ?? 0);
+            if ($forwardPort < 1 || $forwardPort > 65535) {
+                throw new RuntimeException('NPM forward port must be between 1 and 65535.');
+            }
+            $settings['forward_port'] = (string) $forwardPort;
+        }
+
+        if ($providerKey === 'cloudflare') {
+            if (preg_match('/^[a-f0-9]{32}$/i', (string) ($settings['zone_id'] ?? '')) !== 1) {
+                throw new RuntimeException('Cloudflare zone ID must be a 32-character hexadecimal value.');
+            }
+            if (filter_var((string) ($settings['record_ip'] ?? ''), FILTER_VALIDATE_IP) === false) {
+                throw new RuntimeException('Cloudflare record IP must be a valid IPv4 or IPv6 address.');
+            }
+
+            $ttl = (int) ($settings['ttl'] ?? 0);
+            if ($ttl < 1 || $ttl > 86400) {
+                throw new RuntimeException('Cloudflare TTL must be between 1 and 86400 seconds.');
+            }
+
+            $settings['ttl'] = (string) $ttl;
+            $settings['proxied'] = ($settings['proxied'] ?? '0') === '1' ? '1' : '0';
+        }
+
+        return $settings;
+    }
+
+    /**
+     * @param array{id:string,name:string,provider:string,category:string,settings:array<string,string>} $integration
+     */
+    private function testIntegration(array $integration): void
+    {
+        $settings = is_array($integration['settings'] ?? null) ? $integration['settings'] : [];
+        $verifySsl = $this->config->getBool('CURL_VERIFY_SSL', true);
+
+        if (($integration['provider'] ?? '') === 'npm') {
+            $service = new NpmService(
+                new Config([
+                    'NPM_BASE_URL' => (string) ($settings['base_url'] ?? ''),
+                    'NPM_IDENTITY' => (string) ($settings['identity'] ?? ''),
+                    'NPM_SECRET' => (string) ($settings['secret'] ?? ''),
+                    'NPM_FORWARD_HOST' => (string) ($settings['forward_host'] ?? '127.0.0.1'),
+                    'NPM_FORWARD_PORT' => (string) ($settings['forward_port'] ?? '80'),
+                    'NPM_SSL_ENABLED' => 'false',
+                    'NPM_CERTIFICATE_ID' => '0',
+                    'NPM_SSL_FORCED' => 'false',
+                    'NPM_HTTP2_SUPPORT' => 'false',
+                    'NPM_HSTS_ENABLED' => 'false',
+                    'NPM_HSTS_SUBDOMAINS' => 'false',
+                ]),
+                new HttpClient($verifySsl),
+                new Logger((string) $this->config->get('LOG_FILE', __DIR__ . '/../../storage/logs/app.log'))
+            );
+            $service->listCertificates();
+
+            return;
+        }
+
+        if (($integration['provider'] ?? '') === 'cloudflare') {
+            $http = new HttpClient($verifySsl);
+            $result = $http->get(
+                'https://api.cloudflare.com/client/v4/zones/' . rawurlencode((string) ($settings['zone_id'] ?? '')),
+                ['Authorization: Bearer ' . (string) ($settings['api_token'] ?? '')]
+            );
+
+            if ($result['status'] !== 200 || empty($result['body']['success'])) {
+                $errors = json_encode($result['body']['errors'] ?? [], JSON_UNESCAPED_SLASHES) ?: '[]';
+                throw new RuntimeException('Cloudflare connection test failed: ' . $errors);
+            }
+
+            return;
+        }
+
+        throw new RuntimeException('Unsupported integration provider.');
+    }
+
+    /**
      * @return list<array{domain:string, zone_id:string, api_token:string}>
      */
     private function cloudflareDomainsFromStore(): array
@@ -625,8 +1086,13 @@ final class SettingsController extends BaseController
     private function handleAdminUsernameUpdate(): void
     {
         $newAdmin = strtolower(trim((string) ($_POST['admin_user'] ?? '')));
+        $newAdminFullName = trim((string) ($_POST['admin_full_name'] ?? ''));
         if ($newAdmin === '' || filter_var($newAdmin, FILTER_VALIDATE_EMAIL) === false) {
             throw new RuntimeException('Admin email must be a valid email address.');
+        }
+
+        if ($newAdminFullName === '' || strlen($newAdminFullName) < 2 || strlen($newAdminFullName) > 120) {
+            throw new RuntimeException('Admin full name must be between 2 and 120 characters.');
         }
 
         $users = $this->usersFromStore();
@@ -634,15 +1100,95 @@ final class SettingsController extends BaseController
             throw new RuntimeException('That email already exists as an additional user.');
         }
 
-        $this->settingsStore->setMany(['ADMIN_USER' => $newAdmin]);
+        $this->settingsStore->setMany([
+            'ADMIN_USER' => $newAdmin,
+            'ADMIN_FULL_NAME' => $newAdminFullName,
+        ]);
         $_SESSION['username'] = $newAdmin;
+        $_SESSION['display_name'] = $newAdminFullName;
+        $_SESSION['account_role'] = 'Primary Admin';
+    }
+
+    private function handleUserUpdateProfile(): void
+    {
+        $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
+        $newEmail = strtolower(trim((string) ($_POST['new_user_email'] ?? '')));
+        $newFullName = trim((string) ($_POST['new_user_full_name'] ?? ''));
+        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+
+        if ($targetUser === '') {
+            throw new RuntimeException('Target user is required.');
+        }
+
+        if ($targetUser === $adminUser) {
+            throw new RuntimeException('Primary admin profile updates use the admin profile form.');
+        }
+
+        if ($newEmail === '' || filter_var($newEmail, FILTER_VALIDATE_EMAIL) === false) {
+            throw new RuntimeException('User email must be a valid email address.');
+        }
+
+        if ($newEmail === $adminUser) {
+            throw new RuntimeException('That email is reserved by the primary admin account.');
+        }
+
+        if ($newFullName === '' || strlen($newFullName) < 2 || strlen($newFullName) > 120) {
+            throw new RuntimeException('Full name must be between 2 and 120 characters.');
+        }
+
+        $users = $this->usersFromStore();
+        if (!array_key_exists($targetUser, $users)) {
+            throw new RuntimeException('User not found.');
+        }
+
+        if ($newEmail !== $targetUser && array_key_exists($newEmail, $users)) {
+            throw new RuntimeException('Email already exists.');
+        }
+
+        $usersMeta = $this->usersMetaFromStore();
+        $existingMeta = $usersMeta[$targetUser] ?? [
+            'full_name' => '',
+            'account_type' => 'user',
+            'active' => true,
+            'created_at' => date('c'),
+            'last_login_at' => '',
+        ];
+
+        if ($newEmail !== $targetUser) {
+            $users[$newEmail] = $users[$targetUser];
+            unset($users[$targetUser]);
+
+            unset($usersMeta[$targetUser]);
+            $usersMeta[$newEmail] = $existingMeta;
+        }
+
+        $usersMeta[$newEmail]['full_name'] = $newFullName;
+        $usersMeta[$newEmail]['account_type'] = (string) ($usersMeta[$newEmail]['account_type'] ?? 'user') === 'admin' ? 'admin' : 'user';
+        $usersMeta[$newEmail]['active'] = !array_key_exists('active', $usersMeta[$newEmail]) || (bool) $usersMeta[$newEmail]['active'];
+        $usersMeta[$newEmail]['created_at'] = (string) ($usersMeta[$newEmail]['created_at'] ?? date('c'));
+        $usersMeta[$newEmail]['last_login_at'] = (string) ($usersMeta[$newEmail]['last_login_at'] ?? '');
+
+        ksort($users, SORT_NATURAL | SORT_FLAG_CASE);
+
+        $this->settingsStore->setMany([
+            'USERS_JSON' => json_encode($users, JSON_UNESCAPED_SLASHES) ?: '{}',
+            'USERS_META_JSON' => json_encode($usersMeta, JSON_UNESCAPED_SLASHES) ?: '{}',
+        ]);
+
+        $sessionUser = strtolower(trim((string) ($_SESSION['username'] ?? '')));
+        if ($sessionUser !== '' && $sessionUser === $targetUser) {
+            $_SESSION['username'] = $newEmail;
+            $_SESSION['display_name'] = $newFullName;
+        }
     }
 
     private function handleUserAdd(): void
     {
         $username = strtolower(trim((string) ($_POST['new_user'] ?? '')));
+        $fullName = trim((string) ($_POST['new_user_full_name'] ?? ''));
         $password = (string) ($_POST['new_password'] ?? '');
         $confirm = (string) ($_POST['new_password_confirm'] ?? '');
+        $role = strtolower(trim((string) ($_POST['new_user_role'] ?? 'user')));
         $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
 
         if ($username === '' || filter_var($username, FILTER_VALIDATE_EMAIL) === false) {
@@ -651,6 +1197,14 @@ final class SettingsController extends BaseController
 
         if ($username === $adminUser) {
             throw new RuntimeException('That email is reserved by the primary admin account.');
+        }
+
+        if ($fullName === '' || strlen($fullName) < 2 || strlen($fullName) > 120) {
+            throw new RuntimeException('Full name must be between 2 and 120 characters.');
+        }
+
+        if (!in_array($role, ['admin', 'user'], true)) {
+            throw new RuntimeException('Account type must be admin or user.');
         }
 
         $passwordErrors = password_policy_errors($password);
@@ -675,8 +1229,18 @@ final class SettingsController extends BaseController
         $users[$username] = $hash;
         ksort($users, SORT_NATURAL | SORT_FLAG_CASE);
 
+        $usersMeta = $this->usersMetaFromStore();
+        $usersMeta[$username] = [
+            'full_name' => $fullName,
+            'account_type' => $role,
+            'active' => true,
+            'created_at' => date('c'),
+            'last_login_at' => '',
+        ];
+
         $this->settingsStore->setMany([
             'USERS_JSON' => json_encode($users, JSON_UNESCAPED_SLASHES) ?: '{}',
+            'USERS_META_JSON' => json_encode($usersMeta, JSON_UNESCAPED_SLASHES) ?: '{}',
         ]);
     }
 
@@ -732,6 +1296,15 @@ final class SettingsController extends BaseController
             throw new RuntimeException('Only additional users can be deleted.');
         }
 
+        $records = $this->userRecordsFromStore();
+        if (!isset($records[$targetUser])) {
+            throw new RuntimeException('User not found.');
+        }
+
+        if (($records[$targetUser]['account_type'] ?? 'user') === 'admin' && $this->activeAdminCount($records) <= 1) {
+            throw new RuntimeException('At least one active admin account is required.');
+        }
+
         $users = $this->usersFromStore();
         if (!array_key_exists($targetUser, $users)) {
             throw new RuntimeException('User not found.');
@@ -739,9 +1312,240 @@ final class SettingsController extends BaseController
 
         unset($users[$targetUser]);
 
+        $usersMeta = $this->usersMetaFromStore();
+        unset($usersMeta[$targetUser]);
+
         $this->settingsStore->setMany([
             'USERS_JSON' => json_encode($users, JSON_UNESCAPED_SLASHES) ?: '{}',
+            'USERS_META_JSON' => json_encode($usersMeta, JSON_UNESCAPED_SLASHES) ?: '{}',
         ]);
+    }
+
+    private function handleUserToggleStatus(): void
+    {
+        $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
+        if ($targetUser === '') {
+            throw new RuntimeException('Target user is required.');
+        }
+
+        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+        if ($targetUser === $adminUser) {
+            throw new RuntimeException('Primary admin account cannot be disabled.');
+        }
+
+        $records = $this->userRecordsFromStore();
+        if (!isset($records[$targetUser])) {
+            throw new RuntimeException('User not found.');
+        }
+
+        $records[$targetUser]['active'] = !($records[$targetUser]['active'] ?? true);
+        if (($records[$targetUser]['account_type'] ?? 'user') === 'admin' && !($records[$targetUser]['active'] ?? false) && $this->activeAdminCount($records) < 1) {
+            throw new RuntimeException('At least one active admin account is required.');
+        }
+
+        $usersMeta = $this->usersMetaFromStore();
+        $usersMeta[$targetUser] = [
+            'full_name' => (string) ($records[$targetUser]['full_name'] ?? ''),
+            'account_type' => (string) ($records[$targetUser]['account_type'] ?? 'user'),
+            'active' => (bool) ($records[$targetUser]['active'] ?? true),
+            'created_at' => (string) ($records[$targetUser]['created_at'] ?? date('c')),
+            'last_login_at' => (string) ($records[$targetUser]['last_login_at'] ?? ''),
+        ];
+
+        $this->settingsStore->setMany([
+            'USERS_META_JSON' => json_encode($usersMeta, JSON_UNESCAPED_SLASHES) ?: '{}',
+        ]);
+    }
+
+    private function handleUserToggleRole(): void
+    {
+        $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
+        if ($targetUser === '') {
+            throw new RuntimeException('Target user is required.');
+        }
+
+        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+        if ($targetUser === $adminUser) {
+            throw new RuntimeException('Primary admin account role cannot be changed.');
+        }
+
+        $records = $this->userRecordsFromStore();
+        if (!isset($records[$targetUser])) {
+            throw new RuntimeException('User not found.');
+        }
+
+        $currentRole = (string) ($records[$targetUser]['account_type'] ?? 'user');
+        $nextRole = $currentRole === 'admin' ? 'user' : 'admin';
+        $records[$targetUser]['account_type'] = $nextRole;
+
+        if ($currentRole === 'admin' && ($records[$targetUser]['active'] ?? true) && $this->activeAdminCount($records) < 1) {
+            throw new RuntimeException('At least one active admin account is required.');
+        }
+
+        $usersMeta = $this->usersMetaFromStore();
+        $usersMeta[$targetUser] = [
+            'full_name' => (string) ($records[$targetUser]['full_name'] ?? ''),
+            'account_type' => $nextRole,
+            'active' => (bool) ($records[$targetUser]['active'] ?? true),
+            'created_at' => (string) ($records[$targetUser]['created_at'] ?? date('c')),
+            'last_login_at' => (string) ($records[$targetUser]['last_login_at'] ?? ''),
+        ];
+
+        $this->settingsStore->setMany([
+            'USERS_META_JSON' => json_encode($usersMeta, JSON_UNESCAPED_SLASHES) ?: '{}',
+        ]);
+    }
+
+    /**
+     * @return array<string, array{full_name:string,account_type:string,active:bool,created_at:string,last_login_at:string}>
+     */
+    private function usersMetaFromStore(): array
+    {
+        $raw = (string) $this->config->get('USERS_META_JSON', '');
+        if ($raw === '') {
+            return [];
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($decoded as $email => $meta) {
+            if (!is_array($meta)) {
+                continue;
+            }
+
+            $normalized = strtolower(trim((string) $email));
+            if ($normalized === '') {
+                continue;
+            }
+
+            $rows[$normalized] = [
+                'full_name' => trim((string) ($meta['full_name'] ?? '')),
+                'account_type' => (string) ($meta['account_type'] ?? 'user') === 'admin' ? 'admin' : 'user',
+                'active' => !array_key_exists('active', $meta) || (bool) $meta['active'],
+                'created_at' => trim((string) ($meta['created_at'] ?? '')),
+                'last_login_at' => trim((string) ($meta['last_login_at'] ?? '')),
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @return array<string, array{email:string,full_name:string,account_type:string,active:bool,created_at:string,last_login_at:string,is_primary:bool,is_online:bool}>
+     */
+    private function userRecordsFromStore(): array
+    {
+        $adminEmail = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+        $adminFullName = trim((string) $this->config->get('ADMIN_FULL_NAME', ''));
+        $adminCreatedAt = trim((string) $this->config->get('ADMIN_CREATED_AT', ''));
+        $adminLastLoginAt = trim((string) $this->config->get('ADMIN_LAST_LOGIN_AT', ''));
+
+        $records = [
+            $adminEmail => [
+                'email' => $adminEmail,
+                'full_name' => $adminFullName !== '' ? $adminFullName : $adminEmail,
+                'account_type' => 'admin',
+                'active' => true,
+                'created_at' => $adminCreatedAt,
+                'last_login_at' => $adminLastLoginAt,
+                'is_primary' => true,
+                'is_online' => false,
+            ],
+        ];
+
+        $users = $this->usersFromStore();
+        $usersMeta = $this->usersMetaFromStore();
+
+        foreach ($users as $email => $hash) {
+            unset($hash);
+            $meta = $usersMeta[$email] ?? [
+                'full_name' => '',
+                'account_type' => 'user',
+                'active' => true,
+                'created_at' => '',
+                'last_login_at' => '',
+            ];
+
+            $records[$email] = [
+                'email' => $email,
+                'full_name' => trim((string) ($meta['full_name'] ?? '')) !== '' ? (string) $meta['full_name'] : $email,
+                'account_type' => (string) ($meta['account_type'] ?? 'user') === 'admin' ? 'admin' : 'user',
+                'active' => !array_key_exists('active', $meta) || (bool) $meta['active'],
+                'created_at' => (string) ($meta['created_at'] ?? ''),
+                'last_login_at' => (string) ($meta['last_login_at'] ?? ''),
+                'is_primary' => false,
+                'is_online' => false,
+            ];
+        }
+
+        $currentUser = strtolower(trim((string) ($_SESSION['username'] ?? '')));
+        if ($currentUser !== '' && isset($records[$currentUser])) {
+            $records[$currentUser]['is_online'] = true;
+        }
+
+        uasort($records, static function (array $a, array $b): int {
+            if (($a['is_primary'] ?? false) !== ($b['is_primary'] ?? false)) {
+                return ($a['is_primary'] ?? false) ? -1 : 1;
+            }
+
+            return strcasecmp((string) ($a['email'] ?? ''), (string) ($b['email'] ?? ''));
+        });
+
+        return $records;
+    }
+
+    /**
+     * @param array<string, array{email:string,full_name:string,account_type:string,active:bool,created_at:string,last_login_at:string,is_primary:bool}> $records
+     */
+    private function activeAdminCount(array $records): int
+    {
+        return count(array_filter(
+            $records,
+            static fn (array $record): bool => ($record['account_type'] ?? 'user') === 'admin' && !empty($record['active'])
+        ));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function domainOptionsFromStore(): array
+    {
+        $raw = (string) $this->config->get('DOMAINS_JSON', '');
+        $decoded = json_decode($raw, true);
+        $domains = [];
+
+        if (is_array($decoded)) {
+            foreach ($decoded as $entry) {
+                if (!is_string($entry)) {
+                    continue;
+                }
+
+                $domain = strtolower(trim($entry));
+                if ($domain !== '' && DomainValidator::isValid($domain) && !in_array($domain, $domains, true)) {
+                    $domains[] = $domain;
+                }
+            }
+        }
+
+        foreach ($this->cloudflareDomainsFromStore() as $mapping) {
+            $domain = strtolower(trim((string) ($mapping['domain'] ?? '')));
+            if ($domain !== '' && DomainValidator::isValid($domain) && !in_array($domain, $domains, true)) {
+                $domains[] = $domain;
+            }
+        }
+
+        $currentBaseDomain = strtolower(trim((string) $this->config->get('VHOST_BASE_DOMAIN', '')));
+        if ($currentBaseDomain !== '' && DomainValidator::isValid($currentBaseDomain) && !in_array($currentBaseDomain, $domains, true)) {
+            $domains[] = $currentBaseDomain;
+        }
+
+        sort($domains, SORT_NATURAL | SORT_FLAG_CASE);
+
+        return $domains;
     }
 
     private function postBool(string $key): bool

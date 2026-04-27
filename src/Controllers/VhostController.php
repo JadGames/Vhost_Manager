@@ -7,6 +7,7 @@ namespace App\Controllers;
 use App\Core\Config;
 use App\Core\Session;
 use App\Security\Csrf;
+use App\Services\ApacheModulesService;
 use App\Services\VhostService;
 use RuntimeException;
 
@@ -15,9 +16,44 @@ final class VhostController extends BaseController
     public function __construct(
         Config $config,
         private readonly Csrf $csrf,
-        private readonly VhostService $service
+        private readonly VhostService $service,
+        private readonly ApacheModulesService $apacheModules
     ) {
         parent::__construct($config);
+    }
+
+    public function showOverview(): void
+    {
+        $vhosts = array_values($this->service->listManaged());
+        usort($vhosts, static function (array $left, array $right): int {
+            $leftTimestamp = (string) ($left['updated_at'] ?? $left['created_at'] ?? '');
+            $rightTimestamp = (string) ($right['updated_at'] ?? $right['created_at'] ?? '');
+
+            return strcmp($rightTimestamp, $leftTimestamp);
+        });
+
+        $activeModuleCount = 0;
+        try {
+            $activeModuleCount = count(array_filter(
+                $this->apacheModules->listModules(),
+                static fn (array $module): bool => !empty($module['enabled'])
+            ));
+        } catch (RuntimeException) {
+            $activeModuleCount = 0;
+        }
+
+        $this->render('overview.php', [
+            'vhostCount' => count($vhosts),
+            'integrationCount' => $this->integrationCountFromConfig(),
+            'userCount' => $this->additionalUsersCountFromConfig(),
+            'activeModuleCount' => $activeModuleCount,
+            'recentVhosts' => $vhosts,
+        ]);
+    }
+
+    public function showDomains(): void
+    {
+        $this->render('domains/index.php');
     }
 
     public function dashboard(): void
@@ -289,5 +325,47 @@ final class VhostController extends BaseController
         }
 
         return $normalized;
+    }
+
+    private function additionalUsersCountFromConfig(): int
+    {
+        $raw = (string) $this->config->get('USERS_JSON', '');
+        if ($raw === '') {
+            return 0;
+        }
+
+        $decoded = json_decode($raw, true);
+
+        return is_array($decoded) ? count($decoded) : 0;
+    }
+
+    private function integrationCountFromConfig(): int
+    {
+        $raw = (string) $this->config->get('INTEGRATIONS_JSON', '');
+        if ($raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                return count($decoded);
+            }
+        }
+
+        $count = 0;
+        if (
+            trim((string) $this->config->get('NPM_BASE_URL', '')) !== ''
+            && trim((string) $this->config->get('NPM_IDENTITY', '')) !== ''
+            && trim((string) $this->config->get('NPM_SECRET', '')) !== ''
+        ) {
+            $count++;
+        }
+
+        if (
+            trim((string) $this->config->get('CF_API_TOKEN', '')) !== ''
+            && trim((string) $this->config->get('CF_ZONE_ID', '')) !== ''
+            && trim((string) $this->config->get('CF_RECORD_IP', '')) !== ''
+        ) {
+            $count++;
+        }
+
+        return $count;
     }
 }

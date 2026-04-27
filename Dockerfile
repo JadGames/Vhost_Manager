@@ -2,6 +2,7 @@ FROM php:8.3-apache
 
 ARG VHM_VERSION=dev
 ENV VHM_VERSION=${VHM_VERSION}
+LABEL org.opencontainers.image.version=${VHM_VERSION}
 
 # Install system deps and PHP extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,6 +17,7 @@ RUN a2enmod rewrite
 # Set up app
 WORKDIR /opt/vhost-manager
 COPY . .
+RUN printf '%s\n' "${VHM_VERSION}" > /opt/vhost-manager/.vhm-version
 
 # Apache vhost for the app
 COPY docker/apache-vhost-manager.conf /etc/apache2/sites-available/vhost-manager.conf

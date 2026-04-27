@@ -51,7 +51,7 @@ chmod -R 0750 /opt/vhost-manager/storage
 4. Configure settings in SQLite:
 
 - App defaults are seeded automatically into `storage/data/settings.sqlite` on first run.
-- On first load, you must complete the Setup Wizard (admin username/password, app URL, docroot defaults, proxy mode).
+- On first load, you must complete the Setup Wizard (admin email/password, app URL, docroot defaults, proxy mode).
 - Update values later from the Settings pages.
 
 5. Deploy helper script and Apache template as root-owned files:
@@ -130,27 +130,43 @@ sudo systemctl reload apache2
 
 - Mount `storage/` as a persistent volume so `storage/data/settings.sqlite` survives container recreation.
 - Runtime settings changes in the UI are persisted to SQLite.
+- The UI version label follows image build metadata (from Docker build), not compose env.
 - `APP_URL` should be the external URL users access Vhost Manager on (used for URL/HTTPS behavior in the app).
 - If you want extra document-root bases, add them in compose (`VHM_ALLOWED_DOCROOT_BASES`) and mount matching host paths.
 - Vhost Manager detects newly added docroot bases on login and can prompt to change the default.
 
-Example:
+Copy environment template first:
+
+```bash
+cp .env.example .env
+```
+
+Internal NPM mode (default compose):
 
 ```yaml
 services:
     vhost-manager:
+        image: jadgames/vhost-manager:${VHM_IMAGE_TAG}
         environment:
+            VHM_NPM_BOOTSTRAP_IDENTITY: "${VHM_SHARED_EMAIL}"
+            VHM_NPM_BOOTSTRAP_SECRET: "${VHM_SHARED_PASSWORD}"
             VHM_ALLOWED_DOCROOT_BASES: "/var/www,/srv/sites"
-            VHM_DEFAULT_DOCROOT_BASE: "/var/www"
         volumes:
             - /opt/vhost-manager/storage:/opt/vhost-manager/storage
             - /opt/vhost-manager/sites:/srv/sites
 ```
 
+External NPM mode:
+
+```bash
+docker compose -f docker-compose.external-npm.yml up -d
+```
+
 ### Standalone Docker Mode (Built-in Proxy)
 
 - Vhost Manager UI binds to `8080` so it is always reachable directly.
-- Built-in NPM binds to `80` and `443` for proxy traffic (and `81` for NPM admin UI).
+- Built-in NPM binds to `80` and `443` for proxy traffic.
+- Port `81` is commented out by default to reduce exposure; uncomment only when you explicitly need direct NPM admin UI access.
 - During Setup Wizard:
     - Choose `Built-in NPM` for standalone installs.
     - Choose `External NPM` to configure an external NPM instance on the next setup step.
@@ -161,11 +177,10 @@ services:
 - Currently supported provider: `Nginx Proxy Manager (NPM)`.
 - The next setup step asks for:
     - NPM Base URL
-    - NPM Username / Email
+    - NPM Admin Email
     - NPM Password
     - Forward Host and Forward Port
-- The default Docker compose sets `VHM_BUILTIN_NPM_AVAILABLE=true` for the Vhost Manager container.
-- If you remove the built-in `npm` service from compose, also remove that env var or set it to `false` so the wizard switches to external-proxy setup.
+- `docker-compose.external-npm.yml` sets `VHM_BUILTIN_NPM_AVAILABLE=false` and omits the built-in `npm` service.
 
 ## Optional HTTPS Bonus (Let's Encrypt)
 

@@ -10,21 +10,21 @@
 <div class="settings-grid">
     <section class="form-card settings-card">
         <h2 class="settings-title">Primary Admin</h2>
-        <p class="settings-subtitle">Change the main admin username and reset password.</p>
+        <p class="settings-subtitle">Change the main admin email and reset password.</p>
 
         <form class="form" method="post" action="/?route=settings-users-action" autocomplete="off">
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
             <input type="hidden" name="intent" value="admin-update">
 
             <div class="form-group">
-                <label class="form-label" for="admin_user">Admin Username</label>
-                <input class="form-input" id="admin_user" type="text" name="admin_user" value="<?= e((string) $adminUser) ?>" required>
+                <label class="form-label" for="admin_user">Admin Email</label>
+                <input class="form-input" id="admin_user" type="email" name="admin_user" value="<?= e((string) $adminUser) ?>" required>
             </div>
 
             <div class="btn-group">
                 <button class="btn btn--primary" type="submit">
                     <i class="fa-solid fa-user-pen"></i>
-                    Update Admin Username
+                    Update Admin Email
                 </button>
             </div>
         </form>
@@ -76,8 +76,8 @@
             <input type="hidden" name="intent" value="user-add">
 
             <div class="form-group">
-                <label class="form-label" for="new_user">Username</label>
-                <input class="form-input" id="new_user" type="text" name="new_user" required>
+                <label class="form-label" for="new_user">Email</label>
+                <input class="form-input" id="new_user" type="email" name="new_user" required>
             </div>
             <div class="form-group">
                 <label class="form-label" for="new_password">Password</label>
@@ -122,7 +122,7 @@
                     <div class="settings-list-row">
                         <div>
                             <strong><?= e((string) $username) ?></strong>
-                            <div class="form-hint">Additional user</div>
+                            <div class="form-hint">Additional user email</div>
                         </div>
 
                         <div class="btn-group">

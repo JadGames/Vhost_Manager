@@ -17,7 +17,7 @@ final class AppDefaults
 
         return [
             'APP_ENV' => 'production',
-            'APP_VERSION' => getenv('VHM_VERSION') ?: 'dev',
+            'APP_VERSION' => self::defaultAppVersion(),
             'APP_TIMEZONE' => getenv('VHM_TIMEZONE') ?: 'Australia/Brisbane',
             'TRUSTED_PROXIES' => getenv('VHM_TRUSTED_PROXIES') ?: '127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16',
             'APP_URL' => 'http://localhost:8080',
@@ -75,5 +75,23 @@ final class AppDefaults
         }
 
         return dirname(__DIR__, 2) . '/storage';
+    }
+
+    private static function defaultAppVersion(): string
+    {
+        $envVersion = trim((string) (getenv('VHM_VERSION') ?: ''));
+        if ($envVersion !== '') {
+            return $envVersion;
+        }
+
+        $versionFile = '/opt/vhost-manager/.vhm-version';
+        if (is_file($versionFile) && is_readable($versionFile)) {
+            $fileVersion = trim((string) @file_get_contents($versionFile));
+            if ($fileVersion !== '') {
+                return $fileVersion;
+            }
+        }
+
+        return 'dev';
     }
 }

@@ -41,7 +41,7 @@ jobs:
           context: .
           push: true
           build-args: |
-            VHM_VERSION=${{ startsWith(github.ref, 'refs/tags/v') && steps.meta.outputs.version || 'edge' }}
+            VHM_VERSION=${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'edge' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

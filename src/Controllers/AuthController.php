@@ -40,18 +40,18 @@ final class AuthController extends BaseController
             $this->redirect('login');
         }
 
-        $username = trim((string) ($_POST['username'] ?? ''));
+        $email = strtolower(trim((string) ($_POST['email'] ?? '')));
         $password = (string) ($_POST['password'] ?? '');
         $trustedProxies = (string) $this->config->get('TRUSTED_PROXIES', '');
         $ipAddress = client_ip($_SERVER, $trustedProxies);
 
-        [$ok, $message] = $this->authService->login($username, $password, $ipAddress);
+        [$ok, $message] = $this->authService->login($email, $password, $ipAddress);
         if (!$ok) {
             Session::setFlash('error', $message);
             $this->redirect('login');
         }
 
-        Session::login($username);
+        Session::login($email);
         $this->handleDocrootDetectionAfterLogin();
         Session::setFlash('success', 'Logged in successfully.');
         $this->redirect('dashboard');

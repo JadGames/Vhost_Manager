@@ -13,8 +13,8 @@
         <div class="confirm-card">
             <h3 class="confirm-card-title">Admin Account</h3>
             <div class="confirm-grid">
-                <strong>Username:</strong>
-                <span><?= e((string) $summary['username']) ?></span>
+                <strong>Email:</strong>
+                <span><?= e((string) $summary['admin_email']) ?></span>
                 <strong>Password:</strong>
                 <span class="confirm-secret" data-secret-value="<?= e((string) $summary['admin_password']) ?>">
                     ••••••••••
@@ -64,7 +64,7 @@
                 <?php elseif ($summary['proxy_mode'] === 'external_npm'): ?>
                     <strong>NPM URL:</strong>
                     <span><?= e((string) $summary['npm_base_url']) ?></span>
-                    <strong>NPM User:</strong>
+                    <strong>NPM Email:</strong>
                     <span><?= e((string) $summary['npm_identity']) ?></span>
                     <strong>Forward To:</strong>
                     <span><?= e((string) $summary['npm_forward_host']) ?>:<?= e((string) $summary['npm_forward_port']) ?></span>

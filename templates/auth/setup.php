@@ -16,9 +16,9 @@
             <?php $fe = $fieldErrors ?? []; ?>
 
             <div class="form-group">
-                <label class="form-label" for="username">Admin Username</label>
-                <input class="form-input<?= !empty($fe['username']) ? ' is-error' : '' ?>" id="username" type="text" name="username" value="<?= e((string) ($setupUsername ?? '')) ?>" maxlength="64" autofocus placeholder="admin">
-                <?php if (!empty($fe['username'])): ?><span class="form-field-error"><?= e((string) $fe['username']) ?></span><?php endif; ?>
+                <label class="form-label" for="admin_email">Admin Email</label>
+                <input class="form-input<?= !empty($fe['admin_email']) ? ' is-error' : '' ?>" id="admin_email" type="email" name="admin_email" value="<?= e((string) ($setupAdminEmail ?? '')) ?>" maxlength="254" autofocus placeholder="admin@example.com">
+                <?php if (!empty($fe['admin_email'])): ?><span class="form-field-error"><?= e((string) $fe['admin_email']) ?></span><?php endif; ?>
             </div>
 
             <div class="form-group">

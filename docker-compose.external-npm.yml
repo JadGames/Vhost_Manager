@@ -1,0 +1,24 @@
+name: Vhost_Manger
+services:
+  vhost-manager:
+    image: jadgames/vhost-manager:${VHM_IMAGE_TAG:-edge-0.0.1}
+    ports:
+      - "8080:80"
+    environment:
+      TZ: "${TZ:-Australia/Brisbane}"
+      VHM_TRUSTED_PROXIES: "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+      VHM_ALLOWED_DOCROOT_BASES: "/var/www,/srv/sites"
+      VHM_BUILTIN_NPM_AVAILABLE: "false"
+      # Optional defaults shown in setup and used by external-NPM test login.
+      VHM_NPM_BOOTSTRAP_IDENTITY: "${VHM_SHARED_EMAIL}"
+      VHM_NPM_BOOTSTRAP_SECRET: "${VHM_SHARED_PASSWORD}"
+    volumes:
+      - ./config/vhost-manager:/opt/vhost-manager/storage
+      - ./sites:/srv/sites
+      - ./www:/var/www
+    restart: unless-stopped
+
+# Notes:
+# - Vhost Manager UI: http://host:8080
+# - Use setup wizard "External NPM" mode to connect your remote NPM instance.
+# - Keep VHM_ALLOWED_DOCROOT_BASES and volume mounts in sync.

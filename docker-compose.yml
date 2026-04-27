@@ -1,0 +1,44 @@
+services:
+  aphost:
+    image: jadgames/aphost:latest
+    ports:
+      - "8080:80"
+    environment:
+      TZ: "Australia/Brisbane"
+      APHOST_TRUSTED_PROXIES: "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+      # Fallback NPM login APHost uses during setup to apply wizard-provided credentials.
+      APHOST_NPM_BOOTSTRAP_IDENTITY: "admin@example.com"
+      APHOST_NPM_BOOTSTRAP_SECRET: "changeme"
+      APHOST_ALLOWED_DOCROOT_BASES: "/var/www,/srv/sites"
+      APHOST_DEFAULT_DOCROOT_BASE: "/var/www"
+      APHOST_BUILTIN_NPM_AVAILABLE: "true"
+    volumes:
+      - ./config/aphost:/opt/aphost/storage
+      - ./sites:/srv/sites
+      - ./www:/var/www
+    depends_on:
+      - npm
+    restart: unless-stopped
+
+  npm:
+    image: jc21/nginx-proxy-manager:latest
+    ports:
+      - "80:80"
+      - "443:443"
+      - "81:81"
+    environment:
+      TZ: "Australia/Brisbane"
+      # NPM first-run admin user; keep aligned with APHOST_NPM_BOOTSTRAP_* above.
+      INITIAL_ADMIN_EMAIL: "admin@example.com"
+      INITIAL_ADMIN_PASSWORD: "changeme"
+    volumes:
+      - ./config/npm:/data
+      - ./config/npm/letsencrypt:/etc/letsencrypt
+    restart: unless-stopped
+
+# Notes:
+# - APHost UI: http://host:8080
+# - NPM public proxy: host ports 80/443
+# - NPM admin panel: http://host:81
+# - In NPM proxy host config for APHost, forward to host "aphost" port 80.
+# - Keep APHOST_ALLOWED_DOCROOT_BASES and aphost volume mounts in sync.

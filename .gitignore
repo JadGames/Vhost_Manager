@@ -1,0 +1,9 @@
+.env
+storage/logs/*.log
+storage/data/*.json
+storage/data/*.sqlite
+TODO
+
+# Development only
+reset-to-fresh-install.sh
+favicon_io.zip

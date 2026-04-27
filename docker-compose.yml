@@ -1,3 +1,4 @@
+name: Vhost_Manger
 services:
   aphost:
     image: jadgames/aphost:latest

@@ -4,7 +4,7 @@
  */
 (function() {
     'use strict';
-    var THEME_KEY = 'aphost-theme';
+    var THEME_KEY = 'vhost-manager-theme';
     var theme = localStorage.getItem(THEME_KEY) || 'dark';
     document.documentElement.setAttribute('data-theme', theme);
 }());

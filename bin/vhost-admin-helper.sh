@@ -10,7 +10,7 @@ ARG5="${5:-}"
 APACHE_DIR="/etc/apache2/sites-available"
 SITE_USER="www-data"
 DEFAULT_BASE="/var/www"
-TEMPLATE_FILE="/etc/aphost/vhost.conf.tpl"
+TEMPLATE_FILE="/etc/vhost-manager/vhost.conf.tpl"
 
 fail() {
   echo "ERROR: $1" >&2

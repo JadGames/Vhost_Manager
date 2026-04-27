@@ -1,20 +1,20 @@
 name: Vhost_Manger
 services:
-  aphost:
-    image: jadgames/aphost:latest
+  vhost-manager:
+    image: jadgames/vhost-manager:latest
     ports:
       - "8080:80"
     environment:
       TZ: "Australia/Brisbane"
-      APHOST_TRUSTED_PROXIES: "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
-      # Fallback NPM login APHost uses during setup to apply wizard-provided credentials.
-      APHOST_NPM_BOOTSTRAP_IDENTITY: "admin@example.com"
-      APHOST_NPM_BOOTSTRAP_SECRET: "changeme"
-      APHOST_ALLOWED_DOCROOT_BASES: "/var/www,/srv/sites"
-      APHOST_DEFAULT_DOCROOT_BASE: "/var/www"
-      APHOST_BUILTIN_NPM_AVAILABLE: "true"
+      VHM_TRUSTED_PROXIES: "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+      # Fallback NPM login Vhost Manager uses during setup to apply wizard-provided credentials.
+      VHM_NPM_BOOTSTRAP_IDENTITY: "admin@example.com"
+      VHM_NPM_BOOTSTRAP_SECRET: "changeme"
+      VHM_ALLOWED_DOCROOT_BASES: "/var/www,/srv/sites"
+      VHM_DEFAULT_DOCROOT_BASE: "/var/www"
+      VHM_BUILTIN_NPM_AVAILABLE: "true"
     volumes:
-      - ./config/aphost:/opt/aphost/storage
+      - ./config/vhost-manager:/opt/vhost-manager/storage
       - ./sites:/srv/sites
       - ./www:/var/www
     depends_on:
@@ -29,7 +29,7 @@ services:
       - "81:81"
     environment:
       TZ: "Australia/Brisbane"
-      # NPM first-run admin user; keep aligned with APHOST_NPM_BOOTSTRAP_* above.
+      # NPM first-run admin user; keep aligned with VHM_NPM_BOOTSTRAP_* above.
       INITIAL_ADMIN_EMAIL: "admin@example.com"
       INITIAL_ADMIN_PASSWORD: "changeme"
     volumes:
@@ -38,8 +38,8 @@ services:
     restart: unless-stopped
 
 # Notes:
-# - APHost UI: http://host:8080
+# - Vhost Manager UI: http://host:8080
 # - NPM public proxy: host ports 80/443
 # - NPM admin panel: http://host:81
-# - In NPM proxy host config for APHost, forward to host "aphost" port 80.
-# - Keep APHOST_ALLOWED_DOCROOT_BASES and aphost volume mounts in sync.
+# - In NPM proxy host config for Vhost Manager, forward to host "vhost-manager" port 80.
+# - Keep VHM_ALLOWED_DOCROOT_BASES and vhost-manager volume mounts in sync.

@@ -60,7 +60,7 @@
                     </select>
                     <input class="form-input<?= !empty($fe['app_url']) ? ' is-error' : '' ?>" id="app_url_hostpath" type="text" name="app_url_hostpath" value="<?= e((string) ($appUrlHostPath ?? 'localhost:8080')) ?>" placeholder="localhost:8080">
                 </div>
-                <?php if (!empty($fe['app_url'])): ?><span class="form-field-error"><?= e((string) $fe['app_url']) ?></span><?php else: ?><span class="form-hint">URL users will visit for APHost.</span><?php endif; ?>
+                <?php if (!empty($fe['app_url'])): ?><span class="form-field-error"><?= e((string) $fe['app_url']) ?></span><?php else: ?><span class="form-hint">URL users will visit for Vhost Manager.</span><?php endif; ?>
             </div>
 
             <div class="form-group">

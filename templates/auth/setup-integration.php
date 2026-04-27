@@ -58,7 +58,7 @@
                             <i class="fa-solid fa-eye"></i>
                         </button>
                     </div>
-                    <small>Password must be at least 8 characters. Name is auto-set to APHost Admin for built-in setup.</small>
+                    <small>Password must be at least 8 characters. Name is auto-set to Vhost Manager Admin for built-in setup.</small>
                 </div>
             </div>
             <?php endif; ?>
@@ -104,14 +104,14 @@
 
                 <div class="form-group">
                     <label class="form-label" for="npm_forward_host">Forward Address</label>
-                    <input class="form-input" id="npm_forward_host" type="text" name="npm_forward_host" value="<?= e((string) $npmForwardHost) ?>" placeholder="aphost">
-                    <small>URL, IP, or DNS name where APHost is reachable from NPM.</small>
+                    <input class="form-input" id="npm_forward_host" type="text" name="npm_forward_host" value="<?= e((string) $npmForwardHost) ?>" placeholder="vhost-manager">
+                    <small>URL, IP, or DNS name where Vhost Manager is reachable from NPM.</small>
                 </div>
 
                 <div class="form-group">
                     <label class="form-label" for="npm_forward_port">Forward Port</label>
                     <input class="form-input" id="npm_forward_port" type="number" name="npm_forward_port" value="<?= e((string) $npmForwardPort) ?>" min="1" max="65535" placeholder="80">
-                    <small>Internal port where APHost listens on the forward host.</small>
+                    <small>Internal port where Vhost Manager listens on the forward host.</small>
                 </div>
             </div>
 

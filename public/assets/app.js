@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var THEME_KEY   = 'aphost-theme';
+    var THEME_KEY   = 'vhost-manager-theme';
 
     var html         = document.documentElement;
     var sidebar      = document.getElementById('sidebar');
@@ -489,7 +489,7 @@
             return;
         }
 
-        var STORAGE_KEY = 'aphost-setup-form-data';
+        var STORAGE_KEY = 'vhost-manager-setup-form-data';
 
         // Restore form data from localStorage when page loads
         function restoreFormData() {

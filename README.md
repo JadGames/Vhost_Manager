@@ -36,16 +36,16 @@ sudo apt install -y apache2 php php-cli libapache2-mod-php
 2. Place project on server:
 
 ```bash
-sudo mkdir -p /opt/aphost
-sudo chown -R $USER:$USER /opt/aphost
+sudo mkdir -p /opt/vhost-manager
+sudo chown -R $USER:$USER /opt/vhost-manager
 # copy project files here
 ```
 
 3. Create runtime directories and permissions:
 
 ```bash
-mkdir -p /opt/aphost/storage/logs /opt/aphost/storage/data
-chmod -R 0750 /opt/aphost/storage
+mkdir -p /opt/vhost-manager/storage/logs /opt/vhost-manager/storage/data
+chmod -R 0750 /opt/vhost-manager/storage
 ```
 
 4. Configure settings in SQLite:
@@ -57,12 +57,12 @@ chmod -R 0750 /opt/aphost/storage
 5. Deploy helper script and Apache template as root-owned files:
 
 ```bash
-sudo mkdir -p /etc/aphost
-sudo cp /opt/aphost/config/vhost.conf.tpl /etc/aphost/vhost.conf.tpl
-sudo cp /opt/aphost/bin/vhost-admin-helper.sh /usr/local/sbin/vhost-admin-helper
-sudo chown root:root /usr/local/sbin/vhost-admin-helper /etc/aphost/vhost.conf.tpl
+sudo mkdir -p /etc/vhost-manager
+sudo cp /opt/vhost-manager/config/vhost.conf.tpl /etc/vhost-manager/vhost.conf.tpl
+sudo cp /opt/vhost-manager/bin/vhost-admin-helper.sh /usr/local/sbin/vhost-admin-helper
+sudo chown root:root /usr/local/sbin/vhost-admin-helper /etc/vhost-manager/vhost.conf.tpl
 sudo chmod 0750 /usr/local/sbin/vhost-admin-helper
-sudo chmod 0644 /etc/aphost/vhost.conf.tpl
+sudo chmod 0644 /etc/vhost-manager/vhost.conf.tpl
 ```
 
 6. Configure sudoers safely (VERY IMPORTANT):
@@ -79,16 +79,16 @@ Defaults!/usr/local/sbin/vhost-admin-helper !requiretty
 
 ```apache
 <VirtualHost *:80>
-    ServerName aphost.local
-    DocumentRoot /opt/aphost/public
+    ServerName vhost-manager.local
+    DocumentRoot /opt/vhost-manager/public
 
-    <Directory /opt/aphost/public>
+    <Directory /opt/vhost-manager/public>
         AllowOverride All
         Require all granted
     </Directory>
 
-    ErrorLog ${APACHE_LOG_DIR}/aphost_error.log
-    CustomLog ${APACHE_LOG_DIR}/aphost_access.log combined
+    ErrorLog ${APACHE_LOG_DIR}/vhost-manager_error.log
+    CustomLog ${APACHE_LOG_DIR}/vhost-manager_access.log combined
 </VirtualHost>
 ```
 
@@ -96,7 +96,7 @@ Enable and reload:
 
 ```bash
 sudo a2enmod rewrite
-sudo a2ensite aphost.conf
+sudo a2ensite vhost-manager.conf
 sudo apache2ctl configtest
 sudo systemctl reload apache2
 ```
@@ -130,26 +130,26 @@ sudo systemctl reload apache2
 
 - Mount `storage/` as a persistent volume so `storage/data/settings.sqlite` survives container recreation.
 - Runtime settings changes in the UI are persisted to SQLite.
-- `APP_URL` should be the external URL users access APHost on (used for URL/HTTPS behavior in the app).
-- If you want extra document-root bases, add them in compose (`APHOST_ALLOWED_DOCROOT_BASES`) and mount matching host paths.
-- APHost detects newly added docroot bases on login and can prompt to change the default.
+- `APP_URL` should be the external URL users access Vhost Manager on (used for URL/HTTPS behavior in the app).
+- If you want extra document-root bases, add them in compose (`VHM_ALLOWED_DOCROOT_BASES`) and mount matching host paths.
+- Vhost Manager detects newly added docroot bases on login and can prompt to change the default.
 
 Example:
 
 ```yaml
 services:
-    aphost:
+    vhost-manager:
         environment:
-            APHOST_ALLOWED_DOCROOT_BASES: "/var/www,/srv/sites"
-            APHOST_DEFAULT_DOCROOT_BASE: "/var/www"
+            VHM_ALLOWED_DOCROOT_BASES: "/var/www,/srv/sites"
+            VHM_DEFAULT_DOCROOT_BASE: "/var/www"
         volumes:
-            - /opt/aphost/storage:/opt/aphost/storage
-            - /opt/aphost/sites:/srv/sites
+            - /opt/vhost-manager/storage:/opt/vhost-manager/storage
+            - /opt/vhost-manager/sites:/srv/sites
 ```
 
 ### Standalone Docker Mode (Built-in Proxy)
 
-- APHost UI binds to `8080` so it is always reachable directly.
+- Vhost Manager UI binds to `8080` so it is always reachable directly.
 - Built-in NPM binds to `80` and `443` for proxy traffic (and `81` for NPM admin UI).
 - During Setup Wizard:
     - Choose `Built-in NPM` for standalone installs.
@@ -164,7 +164,7 @@ services:
     - NPM Username / Email
     - NPM Password
     - Forward Host and Forward Port
-- The default Docker compose sets `APHOST_BUILTIN_NPM_AVAILABLE=true` for the APHost container.
+- The default Docker compose sets `VHM_BUILTIN_NPM_AVAILABLE=true` for the Vhost Manager container.
 - If you remove the built-in `npm` service from compose, also remove that env var or set it to `false` so the wizard switches to external-proxy setup.
 
 ## Optional HTTPS Bonus (Let's Encrypt)

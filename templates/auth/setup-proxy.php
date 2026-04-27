@@ -8,7 +8,7 @@
 
     <div class="auth-box">
         <h1 class="auth-title">Configure NPM</h1>
-        <p class="auth-subtitle">Provide the Nginx Proxy Manager API details so APHost can manage proxy hosts for you.</p>
+        <p class="auth-subtitle">Provide the Nginx Proxy Manager API details so Vhost Manager can manage proxy hosts for you.</p>
 
         <form class="form" method="post" action="/?route=setup-proxy" autocomplete="off">
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">

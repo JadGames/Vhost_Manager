@@ -38,7 +38,7 @@
             <div class="form-group">
                 <label class="form-label" for="app_url">App URL</label>
                 <input class="form-input" id="app_url" type="url" name="app_url" value="<?= e((string) $appUrl) ?>" required>
-                <span class="form-hint">Used for generated links and HTTPS behavior. Keep this as your external APHost URL.</span>
+                <span class="form-hint">Used for generated links and HTTPS behavior. Keep this as your external Vhost Manager URL.</span>
             </div>
             <div class="form-group">
                 <label class="form-label" for="vhost_base_domain">Default Base Domain</label>

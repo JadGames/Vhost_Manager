@@ -2,8 +2,7 @@
 storage/logs/*.log
 storage/data/*.json
 storage/data/*.sqlite
-TODO
-
+TODO.md
 # Development only
 reset-to-fresh-install.sh
 favicon_io.zip

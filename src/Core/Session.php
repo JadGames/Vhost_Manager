@@ -12,7 +12,7 @@ final class Session
             return;
         }
 
-        session_name((string) $config->get('SESSION_NAME', 'APHOSTSESSID'));
+        session_name((string) $config->get('SESSION_NAME', 'VHMSESSID'));
 
         session_set_cookie_params([
             'lifetime' => 0,

@@ -180,7 +180,7 @@
                 <?php if ($detectedNewBases !== [] && $detectedAllowedBases !== []): ?>
                     <dialog id="docroot-detection-dialog" data-auto-open="true">
                         <p class="dialog-title">New Docroot Base Detected</p>
-                        <p class="dialog-subtitle">APHost detected new document-root base path(s) from compose:</p>
+                        <p class="dialog-subtitle">Vhost Manager detected new document-root base path(s) from compose:</p>
                         <ul class="password-policy" style="margin-top: 0; margin-bottom: 12px;">
                             <?php foreach ($detectedNewBases as $base): ?>
                                 <li class="is-valid"><?= e((string) $base) ?></li>

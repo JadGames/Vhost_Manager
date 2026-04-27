@@ -27,7 +27,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: jadgames/aphost
+          images: jadgames/vhost-manager
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -41,7 +41,7 @@ jobs:
           context: .
           push: true
           build-args: |
-            APHOST_VERSION=${{ startsWith(github.ref, 'refs/tags/v') && steps.meta.outputs.version || 'edge' }}
+            VHM_VERSION=${{ startsWith(github.ref, 'refs/tags/v') && steps.meta.outputs.version || 'edge' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

@@ -29,7 +29,7 @@ final class SettingsController extends BaseController
             'csrfToken' => $this->csrf->token(),
             'appUrl' => (string) $this->config->get('APP_URL', 'http://localhost'),
             'appHttps' => $this->config->getBool('APP_HTTPS', false),
-            'sessionName' => (string) $this->config->get('SESSION_NAME', 'APHOSTSESSID'),
+            'sessionName' => (string) $this->config->get('SESSION_NAME', 'VHMSESSID'),
             'sessionIdleTimeout' => (int) $this->config->get('SESSION_IDLE_TIMEOUT', 1800),
             'allowedDocrootBases' => $allowedDocrootBases,
             'defaultDocrootBase' => (string) $this->config->get('DEFAULT_DOCROOT_BASE', '/var/www'),

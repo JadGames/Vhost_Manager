@@ -236,7 +236,7 @@ final class SetupController extends BaseController
             $this->redirect('setup');
         }
 
-        $npmForwardPort = (int) (getenv('APHOST_NPM_FORWARD_PORT') ?: '80');
+        $npmForwardPort = (int) (getenv('VHM_NPM_FORWARD_PORT') ?: '80');
 
         $this->render('auth/setup-integration.php', [
             'csrfToken' => $this->csrf->token(),
@@ -439,7 +439,7 @@ final class SetupController extends BaseController
             $settings['NPM_BASE_URL'] = 'http://npm:81';
             $settings['NPM_IDENTITY'] = $builtinIdentity;
             $settings['NPM_SECRET'] = $builtinSecret;
-            $settings['NPM_FORWARD_HOST'] = 'aphost';
+            $settings['NPM_FORWARD_HOST'] = 'vhost-manager';
             $settings['NPM_FORWARD_PORT'] = '80';
         } elseif ($proxyMode === 'external_npm') {
             $settings['NPM_ENABLED'] = 'true';
@@ -489,7 +489,7 @@ final class SetupController extends BaseController
 
     private function hasBuiltinNpm(): bool
     {
-        return filter_var(getenv('APHOST_BUILTIN_NPM_AVAILABLE') ?: 'false', FILTER_VALIDATE_BOOLEAN);
+        return filter_var(getenv('VHM_BUILTIN_NPM_AVAILABLE') ?: 'false', FILTER_VALIDATE_BOOLEAN);
     }
 
     private function consumeExternalNpmTestError(): ?string
@@ -528,8 +528,8 @@ final class SetupController extends BaseController
     private function provisionBuiltinNpmCredentials(string $identity, string $secret): ?string
     {
         $baseUrl = 'http://npm:81';
-        $bootstrapIdentity = trim((string) (getenv('APHOST_NPM_BOOTSTRAP_IDENTITY') ?: 'admin@example.com'));
-        $bootstrapSecret = (string) (getenv('APHOST_NPM_BOOTSTRAP_SECRET') ?: 'changeme');
+        $bootstrapIdentity = trim((string) (getenv('VHM_NPM_BOOTSTRAP_IDENTITY') ?: 'admin@example.com'));
+        $bootstrapSecret = (string) (getenv('VHM_NPM_BOOTSTRAP_SECRET') ?: 'changeme');
 
         // If the target credentials already work, there is nothing to change.
         if ($this->requestNpmToken($baseUrl, $identity, $secret) !== null) {
@@ -548,7 +548,7 @@ final class SetupController extends BaseController
         // Fresh NPM installs usually start with the configured bootstrap login.
         $bootstrapToken = $this->requestNpmToken($baseUrl, $bootstrapIdentity, $bootstrapSecret);
         if ($bootstrapToken === null) {
-            return 'Built-in NPM is reachable, but APHost could not authenticate to apply the selected credentials. If this is an existing NPM instance, enter its current admin login and password in setup first.';
+            return 'Built-in NPM is reachable, but Vhost Manager could not authenticate to apply the selected credentials. If this is an existing NPM instance, enter its current admin login and password in setup first.';
         }
 
         $authHeader = ["Authorization: Bearer {$bootstrapToken}"];
@@ -566,7 +566,7 @@ final class SetupController extends BaseController
             $updateUserResponse = $this->httpClient->put(
                 rtrim($baseUrl, '/') . '/api/users/me',
                 [
-                    'name' => $name !== '' ? $name : 'APHost Admin',
+                    'name' => $name !== '' ? $name : 'Vhost Manager Admin',
                     'nickname' => $nickname !== '' ? $nickname : 'admin',
                     'email' => $identity,
                 ],
@@ -625,7 +625,7 @@ final class SetupController extends BaseController
     {
         try {
             $result = $this->httpClient->post(rtrim($baseUrl, '/') . '/api/users', [
-                'name' => 'APHost Admin',
+                'name' => 'Vhost Manager Admin',
                 'nickname' => 'admin',
                 'email' => $identity,
                 'auth' => [

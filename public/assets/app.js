@@ -365,6 +365,56 @@
 
     initLogsLiveControls();
 
+    function initApacheModulesSearch() {
+        var input = document.getElementById('apache-module-search');
+        var statusFilter = document.getElementById('apache-module-status-filter');
+        var list = document.getElementById('apache-modules-list');
+        var empty = document.getElementById('apache-modules-empty');
+        if (!input || !list) {
+            return;
+        }
+
+        var cards = Array.prototype.slice.call(list.querySelectorAll('[data-module-card]'));
+
+        function applyFilter() {
+            var query = String(input.value || '').trim().toLowerCase();
+            var status = statusFilter ? String(statusFilter.value || 'all') : 'all';
+            var visibleCount = 0;
+
+            cards.forEach(function (card) {
+                var title = String(card.getAttribute('data-module-title') || '').toLowerCase();
+                var description = String(card.getAttribute('data-module-description') || '').toLowerCase();
+                var enabled = String(card.getAttribute('data-module-enabled') || '0') === '1';
+
+                var matchesText = query === ''
+                    || title.indexOf(query) !== -1
+                    || description.indexOf(query) !== -1;
+
+                var matchesStatus = status === 'all'
+                    || (status === 'enabled' && enabled)
+                    || (status === 'disabled' && !enabled);
+
+                var visible = matchesText && matchesStatus;
+                card.hidden = !visible;
+                if (visible) {
+                    visibleCount += 1;
+                }
+            });
+
+            if (empty) {
+                empty.hidden = visibleCount !== 0;
+            }
+        }
+
+        input.addEventListener('input', applyFilter);
+        if (statusFilter) {
+            statusFilter.addEventListener('change', applyFilter);
+        }
+        applyFilter();
+    }
+
+    initApacheModulesSearch();
+
     function initPasswordPolicyLiveFeedback() {
         var passwordInputs = document.querySelectorAll('input[data-password-policy-list]');
         if (!passwordInputs.length) {

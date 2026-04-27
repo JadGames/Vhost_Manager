@@ -25,8 +25,13 @@ final class AppDefaults
             'SESSION_NAME' => 'VHMSESSID',
             'SESSION_IDLE_TIMEOUT' => '1800',
             'ADMIN_USER' => '',
+            'ADMIN_FULL_NAME' => '',
             'ADMIN_PASSWORD_HASH' => '',
+            'ADMIN_CREATED_AT' => '',
+            'ADMIN_LAST_LOGIN_AT' => '',
             'USERS_JSON' => '{}',
+            'USERS_META_JSON' => '{}',
+            'DOMAINS_JSON' => '[]',
             'DATA_DIR' => $dataDir,
             'LOG_FILE' => $logsDir . '/app.log',
             'MANAGED_VHOSTS_FILE' => $dataDir . '/vhosts.json',
@@ -60,6 +65,7 @@ final class AppDefaults
             'NPM_HSTS_ENABLED' => 'false',
             'NPM_HSTS_SUBDOMAINS' => 'false',
             'PROXY_MODE' => 'builtin_npm',
+            'INTEGRATIONS_JSON' => '',
         ];
     }
 

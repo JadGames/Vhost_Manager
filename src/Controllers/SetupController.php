@@ -45,6 +45,7 @@ final class SetupController extends BaseController
         $this->render('auth/setup.php', [
             'csrfToken' => $this->csrf->token(),
             'setupAdminEmail' => (string) ($pendingSetup['ADMIN_USER'] ?? ''),
+            'setupAdminFullName' => (string) ($pendingSetup['ADMIN_FULL_NAME'] ?? ''),
             'appUrlScheme' => $appUrlScheme,
             'appUrlHostPath' => $appUrlHostPath,
             'allowedDocrootBases' => $allowedDocrootBases,
@@ -69,6 +70,7 @@ final class SetupController extends BaseController
         }
 
         $adminEmail = strtolower(trim((string) ($_POST['admin_email'] ?? '')));
+        $adminFullName = trim((string) ($_POST['admin_full_name'] ?? ''));
         $password = (string) ($_POST['password'] ?? '');
         $confirmPassword = (string) ($_POST['confirm_password'] ?? '');
         $appUrlScheme = strtolower(trim((string) ($_POST['app_url_scheme'] ?? 'http')));
@@ -85,6 +87,7 @@ final class SetupController extends BaseController
         $cleanHostPath = ltrim((string) (preg_replace('#^https?://#i', '', $appUrlHostPath) ?? $appUrlHostPath), '/');
         $_SESSION['setup_pending'] = array_merge($pendingSetup, [
             'ADMIN_USER' => $adminEmail,
+            'ADMIN_FULL_NAME' => $adminFullName,
             'APP_URL' => $appUrlScheme . '://' . $cleanHostPath,
         ]);
         $pendingSetup = $_SESSION['setup_pending'];
@@ -98,6 +101,10 @@ final class SetupController extends BaseController
 
         if ($adminEmail === '' || filter_var($adminEmail, FILTER_VALIDATE_EMAIL) === false) {
             $fieldErrors['admin_email'] = 'Must be a valid email address.';
+        }
+
+        if ($adminFullName === '' || strlen($adminFullName) < 2 || strlen($adminFullName) > 120) {
+            $fieldErrors['admin_full_name'] = 'Full name must be between 2 and 120 characters.';
         }
 
         $keepPendingPassword =
@@ -150,6 +157,7 @@ final class SetupController extends BaseController
         // Store page 1 data in session for page 2 & 3.
         $_SESSION['setup_pending'] = [
             'ADMIN_USER' => $adminEmail,
+            'ADMIN_FULL_NAME' => $adminFullName,
             'ADMIN_PASSWORD_HASH' => $passwordHash,
             'APP_URL' => $appUrl,
             'APP_HTTPS' => strtolower($scheme) === 'https' ? 'true' : 'false',
@@ -389,6 +397,7 @@ final class SetupController extends BaseController
 
         $summary = [
             'admin_email' => $pendingSetup['ADMIN_USER'] ?? '',
+            'admin_full_name' => $pendingSetup['ADMIN_FULL_NAME'] ?? '',
             'admin_password' => $_SESSION['setup_pending_admin_password'] ?? '',
             'app_url' => $pendingSetup['APP_URL'] ?? '',
             'app_https' => $pendingSetup['APP_HTTPS'] === 'true',
@@ -431,6 +440,12 @@ final class SetupController extends BaseController
         $proxyMode = $_SESSION['setup_pending_proxy_mode'] ?? 'disabled';
         $settings = $pendingSetup;
         $settings['PROXY_MODE'] = $proxyMode;
+        if (trim((string) ($settings['ADMIN_CREATED_AT'] ?? '')) === '') {
+            $settings['ADMIN_CREATED_AT'] = date('c');
+        }
+        if (trim((string) ($settings['ADMIN_FULL_NAME'] ?? '')) === '') {
+            $settings['ADMIN_FULL_NAME'] = (string) ($settings['ADMIN_USER'] ?? 'Admin User');
+        }
 
         if ($proxyMode === 'builtin_npm') {
             $builtinIdentity = (string) ($_SESSION['setup_pending_builtin_npm_identity'] ?? 'admin@example.com');
@@ -483,7 +498,7 @@ final class SetupController extends BaseController
         Session::login($adminEmail);
 
         Session::setFlash('success', 'Setup complete and you are now logged in!');
-        $this->redirect('dashboard');
+        $this->redirect('overview');
     }
 
     private function isSetupComplete(): bool

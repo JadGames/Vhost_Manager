@@ -22,6 +22,12 @@
             </div>
 
             <div class="form-group">
+                <label class="form-label" for="admin_full_name">Full Name</label>
+                <input class="form-input<?= !empty($fe['admin_full_name']) ? ' is-error' : '' ?>" id="admin_full_name" type="text" name="admin_full_name" value="<?= e((string) ($setupAdminFullName ?? '')) ?>" maxlength="120" placeholder="Jane Admin" required>
+                <?php if (!empty($fe['admin_full_name'])): ?><span class="form-field-error"><?= e((string) $fe['admin_full_name']) ?></span><?php endif; ?>
+            </div>
+
+            <div class="form-group">
                 <label class="form-label" for="password">Admin Password</label>
                 <div class="secret-input-wrap">
                     <input class="form-input<?= !empty($fe['password']) ? ' is-error' : '' ?>" id="password" type="password" name="password" placeholder="At least 8 characters" data-password-policy-list="setup-password-policy">

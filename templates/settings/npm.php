@@ -26,7 +26,7 @@
             </div>
             <div class="form-group">
                 <label class="form-label" for="npm_identity">Identity (email)</label>
-                <input class="form-input" id="npm_identity" type="text" name="npm_identity" value="<?= e((string) $npmIdentity) ?>">
+                <input class="form-input" id="npm_identity" type="email" name="npm_identity" value="<?= e((string) $npmIdentity) ?>">
             </div>
         </div>
 

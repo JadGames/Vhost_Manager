@@ -44,7 +44,7 @@ final class SetupController extends BaseController
 
         $this->render('auth/setup.php', [
             'csrfToken' => $this->csrf->token(),
-            'setupUsername' => (string) ($pendingSetup['ADMIN_USER'] ?? ''),
+            'setupAdminEmail' => (string) ($pendingSetup['ADMIN_USER'] ?? ''),
             'appUrlScheme' => $appUrlScheme,
             'appUrlHostPath' => $appUrlHostPath,
             'allowedDocrootBases' => $allowedDocrootBases,
@@ -68,7 +68,7 @@ final class SetupController extends BaseController
             $this->redirect('setup');
         }
 
-        $username = trim((string) ($_POST['username'] ?? ''));
+        $adminEmail = strtolower(trim((string) ($_POST['admin_email'] ?? '')));
         $password = (string) ($_POST['password'] ?? '');
         $confirmPassword = (string) ($_POST['confirm_password'] ?? '');
         $appUrlScheme = strtolower(trim((string) ($_POST['app_url_scheme'] ?? 'http')));
@@ -84,7 +84,7 @@ final class SetupController extends BaseController
         // Persist submitted values immediately so they survive error redirects.
         $cleanHostPath = ltrim((string) (preg_replace('#^https?://#i', '', $appUrlHostPath) ?? $appUrlHostPath), '/');
         $_SESSION['setup_pending'] = array_merge($pendingSetup, [
-            'ADMIN_USER' => $username,
+            'ADMIN_USER' => $adminEmail,
             'APP_URL' => $appUrlScheme . '://' . $cleanHostPath,
         ]);
         $pendingSetup = $_SESSION['setup_pending'];
@@ -96,8 +96,8 @@ final class SetupController extends BaseController
             $fieldErrors['app_url'] = 'Protocol must be http or https.';
         }
 
-        if (!preg_match('/^[A-Za-z0-9_.-]{3,64}$/', $username)) {
-            $fieldErrors['username'] = 'Must be 3–64 chars: letters, numbers, dot, underscore, or dash.';
+        if ($adminEmail === '' || filter_var($adminEmail, FILTER_VALIDATE_EMAIL) === false) {
+            $fieldErrors['admin_email'] = 'Must be a valid email address.';
         }
 
         $keepPendingPassword =
@@ -149,7 +149,7 @@ final class SetupController extends BaseController
 
         // Store page 1 data in session for page 2 & 3.
         $_SESSION['setup_pending'] = [
-            'ADMIN_USER' => $username,
+            'ADMIN_USER' => $adminEmail,
             'ADMIN_PASSWORD_HASH' => $passwordHash,
             'APP_URL' => $appUrl,
             'APP_HTTPS' => strtolower($scheme) === 'https' ? 'true' : 'false',
@@ -237,11 +237,15 @@ final class SetupController extends BaseController
         }
 
         $npmForwardPort = (int) (getenv('VHM_NPM_FORWARD_PORT') ?: '80');
+        $defaultBuiltinIdentity = strtolower(trim((string) ($pendingSetup['ADMIN_USER'] ?? 'admin@example.com')));
+        $defaultBuiltinSecret = (string) ($_SESSION['setup_pending_admin_password'] ?? '');
 
         $this->render('auth/setup-integration.php', [
             'csrfToken' => $this->csrf->token(),
             'hasBuiltinNpm' => $this->hasBuiltinNpm(),
             'proxyMode' => $_SESSION['setup_pending_proxy_mode'] ?? ($this->hasBuiltinNpm() ? 'builtin_npm' : 'disabled'),
+            'builtinNpmIdentity' => $_SESSION['setup_pending_builtin_npm_identity'] ?? $defaultBuiltinIdentity,
+            'builtinNpmSecret' => $_SESSION['setup_pending_builtin_npm_secret'] ?? $defaultBuiltinSecret,
             'npmBaseUrl' => $_SESSION['setup_pending_npm_base_url'] ?? '',
             'npmIdentity' => $_SESSION['setup_pending_npm_identity'] ?? '',
             'npmSecret' => $_SESSION['setup_pending_npm_secret'] ?? '',
@@ -286,16 +290,14 @@ final class SetupController extends BaseController
 
         // Handle built-in NPM credentials if selected
         if ($proxyMode === 'builtin_npm') {
-            $npmIdentity = trim((string) ($_POST['builtin_npm_identity'] ?? ''));
+            $npmIdentity = strtolower(trim((string) ($_POST['builtin_npm_identity'] ?? '')));
             $npmSecret = (string) ($_POST['builtin_npm_secret'] ?? '');
+            if ($npmSecret === '') {
+                $npmSecret = (string) ($_SESSION['setup_pending_admin_password'] ?? '');
+            }
 
             if ($npmIdentity === '' || !filter_var($npmIdentity, FILTER_VALIDATE_EMAIL)) {
                 Session::setFlash('error', 'NPM admin email must be a valid email address.');
-                $this->redirect('setup-integration');
-            }
-
-            if ($npmIdentity !== strtolower($npmIdentity)) {
-                Session::setFlash('error', 'NPM admin email must be lowercase only (no capital letters).');
                 $this->redirect('setup-integration');
             }
 
@@ -315,7 +317,7 @@ final class SetupController extends BaseController
             $npmBaseUrlPort = (int) ($_POST['npm_base_url_port'] ?? 81);
             $npmBaseUrl = $npmBaseUrlScheme . '://' . $npmBaseUrlHost . ':' . $npmBaseUrlPort;
 
-            $npmIdentity = trim((string) ($_POST['npm_identity'] ?? ''));
+            $npmIdentity = strtolower(trim((string) ($_POST['npm_identity'] ?? '')));
             $npmSecret = trim((string) ($_POST['npm_secret'] ?? ''));
             $npmForwardHost = trim((string) ($_POST['npm_forward_host'] ?? ''));
             $npmForwardPort = (int) ($_POST['npm_forward_port'] ?? 80);
@@ -331,7 +333,12 @@ final class SetupController extends BaseController
             }
 
             if ($npmIdentity === '' || $npmSecret === '') {
-                Session::setFlash('error', 'NPM username/email and password are required.');
+                Session::setFlash('error', 'NPM admin email and password are required.');
+                $this->redirect('setup-integration');
+            }
+
+            if (filter_var($npmIdentity, FILTER_VALIDATE_EMAIL) === false) {
+                Session::setFlash('error', 'NPM identity must be a valid email address.');
                 $this->redirect('setup-integration');
             }
 
@@ -381,7 +388,7 @@ final class SetupController extends BaseController
         $proxyMode = $_SESSION['setup_pending_proxy_mode'] ?? 'disabled';
 
         $summary = [
-            'username' => $pendingSetup['ADMIN_USER'] ?? '',
+            'admin_email' => $pendingSetup['ADMIN_USER'] ?? '',
             'admin_password' => $_SESSION['setup_pending_admin_password'] ?? '',
             'app_url' => $pendingSetup['APP_URL'] ?? '',
             'app_https' => $pendingSetup['APP_HTTPS'] === 'true',
@@ -472,8 +479,8 @@ final class SetupController extends BaseController
         unset($_SESSION['setup_pending_npm_forward_port']);
 
         // Auto-login the user
-        $username = $settings['ADMIN_USER'] ?? '';
-        Session::login($username);
+        $adminEmail = strtolower(trim((string) ($settings['ADMIN_USER'] ?? '')));
+        Session::login($adminEmail);
 
         Session::setFlash('success', 'Setup complete and you are now logged in!');
         $this->redirect('dashboard');

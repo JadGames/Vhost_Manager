@@ -20,8 +20,8 @@
             </div>
 
             <div class="form-group">
-                <label class="form-label" for="npm_identity">NPM Username / Email</label>
-                <input class="form-input" id="npm_identity" type="text" name="npm_identity" value="<?= e((string) $npmIdentity) ?>" required>
+                <label class="form-label" for="npm_identity">NPM Admin Email</label>
+                <input class="form-input" id="npm_identity" type="email" name="npm_identity" value="<?= e((string) $npmIdentity) ?>" required>
             </div>
 
             <div class="form-group">

@@ -16,8 +16,9 @@ final class AuthService
     ) {
     }
 
-    public function login(string $username, string $password, string $ipAddress): array
+    public function login(string $identity, string $password, string $ipAddress): array
     {
+        $identity = strtolower(trim($identity));
         $limiterKey = 'login:' . hash('sha256', $ipAddress);
 
         if ($this->rateLimiter->isLimited($limiterKey)) {
@@ -25,22 +26,22 @@ final class AuthService
             return [false, "Too many failed attempts. Try again in {$seconds} seconds."];
         }
 
-        $expectedUser = (string) $this->config->get('ADMIN_USER', 'admin');
+        $expectedUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin')));
         $expectedHash = (string) $this->config->get('ADMIN_PASSWORD_HASH', '');
         $users = $this->usersFromStore();
 
-        $isPrimaryAdmin = hash_equals($expectedUser, $username) && $expectedHash !== '' && password_verify($password, $expectedHash);
-        $isAdditionalUser = isset($users[$username]) && $users[$username] !== '' && password_verify($password, $users[$username]);
+        $isPrimaryAdmin = hash_equals($expectedUser, $identity) && $expectedHash !== '' && password_verify($password, $expectedHash);
+        $isAdditionalUser = isset($users[$identity]) && $users[$identity] !== '' && password_verify($password, $users[$identity]);
         $isValid = $isPrimaryAdmin || $isAdditionalUser;
 
         if ($isValid) {
             $this->rateLimiter->clear($limiterKey);
-            $this->logger->info('User authenticated', ['username' => $username, 'ip' => $ipAddress]);
+            $this->logger->info('User authenticated', ['email' => $identity, 'ip' => $ipAddress]);
             return [true, 'Login successful'];
         }
 
         $this->rateLimiter->hit($limiterKey);
-        $this->logger->warning('Failed login', ['username' => $username, 'ip' => $ipAddress]);
+        $this->logger->warning('Failed login', ['email' => $identity, 'ip' => $ipAddress]);
 
         return [false, 'Invalid credentials'];
     }
@@ -62,7 +63,7 @@ final class AuthService
 
         $users = [];
         foreach ($decoded as $name => $hash) {
-            $username = trim((string) $name);
+            $username = strtolower(trim((string) $name));
             $passwordHash = trim((string) $hash);
             if ($username === '' || $passwordHash === '') {
                 continue;

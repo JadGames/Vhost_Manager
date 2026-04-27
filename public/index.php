@@ -68,6 +68,9 @@ if (!in_array($effectiveDefaultDocroot, $mergedDocrootBases, true)) {
 
 $currentSettings['DEFAULT_DOCROOT_BASE'] = $effectiveDefaultDocroot;
 
+// Version should track the running image build metadata, not persisted UI settings.
+$currentSettings['APP_VERSION'] = (string) ($defaultSettings['APP_VERSION'] ?? 'dev');
+
 $missingDefaults = [];
 foreach ($defaultSettings as $key => $value) {
     if (!array_key_exists($key, $currentSettings)) {

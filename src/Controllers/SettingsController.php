@@ -192,7 +192,7 @@ final class SettingsController extends BaseController
 
     public function showUsers(): void
     {
-        $adminUser = (string) $this->config->get('ADMIN_USER', 'admin');
+        $adminUser = (string) $this->config->get('ADMIN_USER', 'admin@example.com');
         $this->render('settings/users.php', [
             'csrfToken' => $this->csrf->token(),
             'adminUser' => $adminUser,
@@ -397,7 +397,7 @@ final class SettingsController extends BaseController
 
         $enabled = $this->postBool('npm_enabled');
         $baseUrl = trim((string) ($_POST['npm_base_url'] ?? ''));
-        $identity = trim((string) ($_POST['npm_identity'] ?? ''));
+        $identity = strtolower(trim((string) ($_POST['npm_identity'] ?? '')));
         $secret = trim((string) ($_POST['npm_secret'] ?? ''));
         $forwardHost = trim((string) ($_POST['npm_forward_host'] ?? ''));
         $forwardPort = (int) ($_POST['npm_forward_port'] ?? 80);
@@ -409,6 +409,11 @@ final class SettingsController extends BaseController
             }
             if ($identity === '' || $secret === '') {
                 Session::setFlash('error', 'NPM identity and secret are required when NPM is enabled.');
+                $this->redirect('settings-npm');
+            }
+
+            if (filter_var($identity, FILTER_VALIDATE_EMAIL) === false) {
+                Session::setFlash('error', 'NPM identity must be a valid email address.');
                 $this->redirect('settings-npm');
             }
         }
@@ -555,7 +560,7 @@ final class SettingsController extends BaseController
 
         $users = [];
         foreach ($decoded as $username => $hash) {
-            $name = trim((string) $username);
+            $name = strtolower(trim((string) $username));
             $passwordHash = trim((string) $hash);
             if ($name === '' || $passwordHash === '') {
                 continue;
@@ -619,14 +624,14 @@ final class SettingsController extends BaseController
 
     private function handleAdminUsernameUpdate(): void
     {
-        $newAdmin = trim((string) ($_POST['admin_user'] ?? ''));
-        if (!preg_match('/^[a-zA-Z0-9._-]{3,64}$/', $newAdmin)) {
-            throw new RuntimeException('Admin username must be 3-64 chars and use letters, numbers, dots, dashes, or underscores.');
+        $newAdmin = strtolower(trim((string) ($_POST['admin_user'] ?? '')));
+        if ($newAdmin === '' || filter_var($newAdmin, FILTER_VALIDATE_EMAIL) === false) {
+            throw new RuntimeException('Admin email must be a valid email address.');
         }
 
         $users = $this->usersFromStore();
         if (array_key_exists($newAdmin, $users)) {
-            throw new RuntimeException('That username already exists as an additional user.');
+            throw new RuntimeException('That email already exists as an additional user.');
         }
 
         $this->settingsStore->setMany(['ADMIN_USER' => $newAdmin]);
@@ -635,17 +640,17 @@ final class SettingsController extends BaseController
 
     private function handleUserAdd(): void
     {
-        $username = trim((string) ($_POST['new_user'] ?? ''));
+        $username = strtolower(trim((string) ($_POST['new_user'] ?? '')));
         $password = (string) ($_POST['new_password'] ?? '');
         $confirm = (string) ($_POST['new_password_confirm'] ?? '');
-        $adminUser = (string) $this->config->get('ADMIN_USER', 'admin');
+        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
 
-        if (!preg_match('/^[a-zA-Z0-9._-]{3,64}$/', $username)) {
-            throw new RuntimeException('Username must be 3-64 chars and use letters, numbers, dots, dashes, or underscores.');
+        if ($username === '' || filter_var($username, FILTER_VALIDATE_EMAIL) === false) {
+            throw new RuntimeException('User email must be a valid email address.');
         }
 
         if ($username === $adminUser) {
-            throw new RuntimeException('That username is reserved by the primary admin account.');
+            throw new RuntimeException('That email is reserved by the primary admin account.');
         }
 
         $passwordErrors = password_policy_errors($password);
@@ -664,7 +669,7 @@ final class SettingsController extends BaseController
 
         $users = $this->usersFromStore();
         if (array_key_exists($username, $users)) {
-            throw new RuntimeException('Username already exists.');
+            throw new RuntimeException('Email already exists.');
         }
 
         $users[$username] = $hash;
@@ -677,10 +682,10 @@ final class SettingsController extends BaseController
 
     private function handleUserPasswordReset(): void
     {
-        $targetUser = trim((string) ($_POST['target_user'] ?? ''));
+        $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
         $password = (string) ($_POST['reset_password'] ?? '');
         $confirm = (string) ($_POST['reset_password_confirm'] ?? '');
-        $adminUser = (string) $this->config->get('ADMIN_USER', 'admin');
+        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
 
         if ($targetUser === '') {
             throw new RuntimeException('Target user is required.');
@@ -720,8 +725,8 @@ final class SettingsController extends BaseController
 
     private function handleUserDelete(): void
     {
-        $targetUser = trim((string) ($_POST['target_user'] ?? ''));
-        $adminUser = (string) $this->config->get('ADMIN_USER', 'admin');
+        $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
+        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
 
         if ($targetUser === '' || $targetUser === $adminUser) {
             throw new RuntimeException('Only additional users can be deleted.');

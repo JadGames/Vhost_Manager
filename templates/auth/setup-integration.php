@@ -40,14 +40,14 @@
 
                 <div class="form-group">
                     <label class="form-label" for="builtin_npm_identity">Admin Email</label>
-                    <input class="form-input" id="builtin_npm_identity" type="email" name="builtin_npm_identity" value="<?= e((string) ($_SESSION['setup_pending_builtin_npm_identity'] ?? 'admin@example.com')) ?>" placeholder="admin@example.com">
+                    <input class="form-input" id="builtin_npm_identity" type="email" name="builtin_npm_identity" value="<?= e((string) ($builtinNpmIdentity ?? 'admin@example.com')) ?>" placeholder="admin@example.com">
                     <small id="builtin_npm_identity_error" class="form-field-error" hidden></small>
                 </div>
 
                 <div class="form-group">
                     <label class="form-label" for="builtin_npm_secret">Admin Password</label>
                     <div class="secret-input-wrap">
-                        <input class="form-input" id="builtin_npm_secret" type="password" name="builtin_npm_secret" placeholder="Choose a strong password">
+                        <input class="form-input" id="builtin_npm_secret" type="password" name="builtin_npm_secret" value="<?= e((string) ($builtinNpmSecret ?? '')) ?>" placeholder="Choose a strong password">
                         <button
                             type="button"
                             class="secret-toggle-btn"
@@ -81,9 +81,9 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label" for="npm_identity">NPM Username or Email</label>
-                    <input class="form-input" id="npm_identity" type="text" name="npm_identity" value="<?= e((string) $npmIdentity) ?>" placeholder="admin@example.com">
-                    <small>Use the same login identity you use for the NPM web UI.</small>
+                    <label class="form-label" for="npm_identity">NPM Admin Email</label>
+                    <input class="form-input" id="npm_identity" type="email" name="npm_identity" value="<?= e((string) $npmIdentity) ?>" placeholder="admin@example.com">
+                    <small>Use the same admin email you use for the NPM web UI.</small>
                 </div>
 
                 <div class="form-group">

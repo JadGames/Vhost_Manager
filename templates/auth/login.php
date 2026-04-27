@@ -14,8 +14,8 @@
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
 
             <div class="form-group">
-                <label class="form-label" for="username">Username</label>
-                <input class="form-input" id="username" type="text" name="username" required maxlength="64" autofocus>
+                <label class="form-label" for="email">Email</label>
+                <input class="form-input" id="email" type="email" name="email" required maxlength="254" autofocus>
             </div>
 
             <div class="form-group">

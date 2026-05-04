@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
-use App\Core\Config;
 use App\Core\Session;
 use App\Security\Csrf;
 use App\Services\ApacheModulesService;
@@ -19,7 +18,7 @@ use RuntimeException;
 final class SettingsController extends BaseController
 {
     public function __construct(
-        Config $config,
+        \App\Core\Config $config,
         private readonly Csrf $csrf,
         private readonly SettingsStore $settingsStore,
         private readonly ApacheModulesService $apacheModules

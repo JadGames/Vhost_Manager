@@ -365,6 +365,36 @@
 
     initLogsLiveControls();
 
+    function initLogsClearConfirmation() {
+        var form = document.getElementById('logs-clear-form');
+        var trigger = document.getElementById('logs-clear-trigger');
+        var modal = document.getElementById('logs-clear-confirm-modal');
+        var confirmBtn = document.getElementById('logs-clear-confirm-btn');
+        if (!form || !trigger || !modal || !confirmBtn) {
+            return;
+        }
+
+        trigger.addEventListener('click', function () {
+            if (typeof modal.showModal === 'function') {
+                modal.showModal();
+                return;
+            }
+
+            if (window.confirm('Clear all system logs? This cannot be undone.')) {
+                form.submit();
+            }
+        });
+
+        confirmBtn.addEventListener('click', function () {
+            if (modal.open && typeof modal.close === 'function') {
+                modal.close();
+            }
+            form.submit();
+        });
+    }
+
+    initLogsClearConfirmation();
+
     function initApacheModulesSearch() {
         var input = document.getElementById('apache-module-search');
         var statusFilter = document.getElementById('apache-module-status-filter');

@@ -36,13 +36,34 @@
         </div>
     </form>
 
-    <form class="logs-actions" method="post" action="/?route=logs-clear">
+    <form class="logs-actions" id="logs-clear-form" method="post" action="/?route=logs-clear">
         <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
-        <button class="btn btn--danger btn--sm" type="submit">
+        <button class="btn btn--danger btn--sm" id="logs-clear-trigger" type="button">
             <i class="fa-solid fa-trash"></i>
             Clear Logs
         </button>
     </form>
+
+    <dialog id="logs-clear-confirm-modal" aria-labelledby="logsClearConfirmTitle">
+        <div class="dialog-header">
+            <div class="dialog-header-text">
+                <p class="dialog-title" id="logsClearConfirmTitle">Clear System Logs?</p>
+                <p class="dialog-subtitle">This will permanently remove all current log entries.</p>
+            </div>
+        </div>
+        <div class="dialog-body">
+            <p class="form-hint" style="margin-bottom: 0;">Use this only if you are sure you no longer need these logs for troubleshooting.</p>
+        </div>
+        <div class="dialog-footer">
+            <form method="dialog">
+                <button class="btn btn--ghost" type="submit">Cancel</button>
+            </form>
+            <button class="btn btn--danger" id="logs-clear-confirm-btn" type="button">
+                <i class="fa-solid fa-trash"></i>
+                Yes, Clear Logs
+            </button>
+        </div>
+    </dialog>
 
     <div class="logs-meta">Source: <?= e((string) $logFile) ?></div>
 

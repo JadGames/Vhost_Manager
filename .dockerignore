@@ -3,3 +3,6 @@
 storage/data/*.sqlite
 storage/data/*.json
 storage/logs/
+.release/
+bin/release-manager.py
+bin/__pycache__/

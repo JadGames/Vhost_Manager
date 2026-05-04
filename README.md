@@ -135,52 +135,94 @@ sudo systemctl reload apache2
 - If you want extra document-root bases, add them in compose (`VHM_ALLOWED_DOCROOT_BASES`) and mount matching host paths.
 - Vhost Manager detects newly added docroot bases on login and can prompt to change the default.
 
-Copy environment template first:
+Single compose file, no `.env` file required.
+
+External NPM mode:
 
 ```bash
-cp .env.example .env
+docker compose up -d
 ```
 
-Internal NPM mode (default compose):
+Optional overrides at launch time:
+
+```bash
+VHM_IMAGE_TAG=latest \
+VHM_ALLOWED_DOCROOT_BASES=/var/www,/srv/sites \
+TZ=Australia/Brisbane \
+docker compose up -d
+```
+
+Compose shape:
 
 ```yaml
 services:
     vhost-manager:
-        image: jadgames/vhost-manager:${VHM_IMAGE_TAG}
+        image: jadgames/vhost-manager:${VHM_IMAGE_TAG:-edge-latest}
         environment:
-            VHM_NPM_BOOTSTRAP_IDENTITY: "${VHM_SHARED_EMAIL}"
-            VHM_NPM_BOOTSTRAP_SECRET: "${VHM_SHARED_PASSWORD}"
-            VHM_ALLOWED_DOCROOT_BASES: "/var/www,/srv/sites"
+            VHM_ALLOWED_DOCROOT_BASES: "${VHM_ALLOWED_DOCROOT_BASES:-/var/www,/srv/sites}"
         volumes:
             - /opt/vhost-manager/storage:/opt/vhost-manager/storage
             - /opt/vhost-manager/sites:/srv/sites
 ```
 
-External NPM mode:
+## Release Workflow (Git + Docker Hub)
+
+Use the interactive release tool to build and push channel tags while keeping
+version state in SQLite:
 
 ```bash
-docker compose -f docker-compose.external-npm.yml up -d
+./bin/release-manager.py
 ```
 
-### Standalone Docker Mode (Built-in Proxy)
+Non-interactive mode (CI-friendly):
 
-- Vhost Manager UI binds to `8080` so it is always reachable directly.
-- Built-in NPM binds to `80` and `443` for proxy traffic.
-- Port `81` is commented out by default to reduce exposure; uncomment only when you explicitly need direct NPM admin UI access.
-- During Setup Wizard:
-    - Choose `Built-in NPM` for standalone installs.
-    - Choose `External NPM` to configure an external NPM instance on the next setup step.
+```bash
+./bin/release-manager.py --non-interactive --yes --channel both
+```
+
+Pin exact versions in non-interactive mode:
+
+```bash
+./bin/release-manager.py \
+    --non-interactive \
+    --yes \
+    --channel both \
+    --main-version v0.0.4 \
+    --edge-version edge-0.1.9
+```
+
+Dry run (prints planned commands, does not push or write release history):
+
+```bash
+./bin/release-manager.py --non-interactive --dry-run --channel edge
+```
+
+What it does:
+
+- Lets you choose `main`, `edge`, or both channels.
+- Suggests the next patch number by default from `.release/release_state.sqlite`.
+- Builds with Docker `--build-arg VHM_VERSION=<selected-version>` so the UI version matches the pushed tag.
+- Pushes channel tags:
+    - `main`: `vX.Y.Z` and `latest`
+    - `edge`: `edge-X.Y.Z` and `edge-latest`
+- Optionally creates and pushes matching git tags.
+- Supports non-interactive CLI flags (`--non-interactive`, `--channel`, version overrides).
+- Supports `--dry-run` to preview all build/push/tag commands safely.
+
+Because each channel build passes its own `VHM_VERSION`, `latest` will display
+its `vX.Y.Z` and `edge-latest` will display its `edge-X.Y.Z` in the app UI.
 
 ### External NPM Mode
 
-- If your deployment does not include the built-in `npm` service, the Setup Wizard shows an `External Proxy Provider` dropdown.
+- The compose stack only runs Vhost Manager itself; connect your proxy from the Setup Wizard or Settings.
+- The Setup Wizard shows an `External Proxy Provider` dropdown.
 - Currently supported provider: `Nginx Proxy Manager (NPM)`.
 - The next setup step asks for:
     - NPM Base URL
     - NPM Admin Email
     - NPM Password
     - Forward Host and Forward Port
-- `docker-compose.external-npm.yml` sets `VHM_BUILTIN_NPM_AVAILABLE=false` and omits the built-in `npm` service.
+- External NPM credentials are entered in the app UI and stored in Vhost Manager settings; they are no longer part of the compose stack.
 
 ## Optional HTTPS Bonus (Let's Encrypt)
 

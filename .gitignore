@@ -6,3 +6,6 @@ TODO.md
 # Development only
 reset-to-fresh-install.sh
 favicon_io.zip
+.release/*.sqlite
+bin/release-manager.py
+bin/__pycache__/

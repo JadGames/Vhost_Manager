@@ -83,7 +83,7 @@
                 <div class="form-group">
                     <label class="form-label" for="npm_identity">NPM Admin Email</label>
                     <input class="form-input" id="npm_identity" type="email" name="npm_identity" value="<?= e((string) $npmIdentity) ?>" placeholder="admin@example.com">
-                    <small>Use the same admin email you use for the NPM web UI.</small>
+                    <small>Used once to create a dedicated VHM account. This admin credential is not stored by Vhost Manager.</small>
                 </div>
 
                 <div class="form-group">
@@ -100,6 +100,7 @@
                             <i class="fa-solid fa-eye"></i>
                         </button>
                     </div>
+                    <small>One-time bootstrap password only. Vhost Manager stores only the generated VHM service account token.</small>
                 </div>
 
                 <div class="form-group">

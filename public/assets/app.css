@@ -884,9 +884,11 @@ input[type="number"] {
 }
 
 .form-field-error {
+    display: block;
     font-size: 11px;
     color: var(--danger);
     line-height: 1.5;
+    margin-top: 3px;
 }
 
 .form-input.is-error,
@@ -1378,6 +1380,9 @@ input[type="number"] {
 /* ================================================
    BUTTONS
    ================================================ */
+/* Ensure [hidden] attribute always wins over component display rules */
+[hidden] { display: none !important; }
+
 .btn {
     display: inline-flex;
     align-items: center;
@@ -1449,6 +1454,16 @@ input[type="number"] {
 .btn--full {
     width: 100%;
     justify-content: center;
+}
+
+.btn:disabled,
+.btn[disabled] {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+    box-shadow: none !important;
+    filter: none !important;
+    transform: none !important;
 }
 
 .btn-group {

@@ -3,13 +3,13 @@
 <div class="page-header">
     <div class="page-header-left">
         <h1 class="page-title">Cloudflare Settings</h1>
-        <p class="page-description">Global Cloudflare integration defaults.</p>
+        <p class="page-description">Enable Cloudflare integration for per-domain DNS settings.</p>
     </div>
 </div>
 
 <section class="form-card settings-card">
     <h2 class="settings-title">Cloudflare Integration</h2>
-    <p class="settings-subtitle">Use domain mappings for per-domain API token and zone configuration.</p>
+    <p class="settings-subtitle">Cloudflare API token, zone, and DNS record behavior are configured per domain from the Domains page.</p>
 
     <form class="form" method="post" action="/?route=settings-cloudflare-save" autocomplete="off">
         <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
@@ -19,44 +19,16 @@
             Enable Cloudflare integration
         </label>
 
-        <div class="form-row">
-            <div class="form-group">
-                <label class="form-label" for="cf_api_token">Default API Token</label>
-                <div class="secret-input-wrap">
-                    <input class="form-input" id="cf_api_token" type="password" name="cf_api_token" value="<?= e((string) $cfApiToken) ?>" autocomplete="off" spellcheck="false">
-                    <button class="secret-toggle-btn" type="button" data-secret-target="cf_api_token" aria-controls="cf_api_token" aria-label="Show secret" aria-pressed="false">
-                        <i class="fa-solid fa-eye"></i>
-                    </button>
-                </div>
-            </div>
-            <div class="form-group">
-                <label class="form-label" for="cf_zone_id">Default Zone ID</label>
-                <input class="form-input" id="cf_zone_id" type="text" name="cf_zone_id" value="<?= e((string) $cfZoneId) ?>">
-            </div>
-        </div>
-
-        <div class="form-row">
-            <div class="form-group">
-                <label class="form-label" for="cf_record_ip">Record IP</label>
-                <input class="form-input" id="cf_record_ip" type="text" name="cf_record_ip" value="<?= e((string) $cfRecordIp) ?>" placeholder="1.2.3.4">
-            </div>
-            <div class="form-group">
-                <label class="form-label" for="cf_ttl">TTL</label>
-                <input class="form-input" id="cf_ttl" type="number" min="1" max="86400" name="cf_ttl" value="<?= e((string) $cfTtl) ?>">
-            </div>
-        </div>
-
-        <label class="form-check">
-            <input type="checkbox" name="cf_proxied" value="1" <?= !empty($cfProxied) ? 'checked' : '' ?>>
-            Proxied records by default
-        </label>
+        <p class="form-hint" style="margin-top: 6px;">
+            When enabled, domain forms can include Cloudflare fields (zone ID, API token, DNS defaults). These values are not managed globally.
+        </p>
 
         <div class="btn-group" style="margin-top: 4px;">
             <button class="btn btn--primary" type="submit">
                 <i class="fa-solid fa-floppy-disk"></i>
-                Save Cloudflare Settings
+                Save Cloudflare Integration
             </button>
-            <a href="/?route=settings-cloudflare-domains" class="btn btn--ghost">Manage Domain Mappings (<?= e((string) $mappingsCount) ?>)</a>
+            <a href="/?route=domains" class="btn btn--ghost">Go to Domains</a>
         </div>
     </form>
 </section>

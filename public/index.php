@@ -127,8 +127,8 @@ $vhostService = new VhostService($config, $logger, $vhostRepository, $cloudflare
 
 $authController = new AuthController($config, $authService, $csrf, $settingsStore);
 $setupController = new SetupController($config, $csrf, $settingsStore, $httpClient);
-$vhostController = new VhostController($config, $csrf, $vhostService, $apacheModulesService);
-$settingsController = new SettingsController($config, $csrf, $settingsStore, $apacheModulesService);
+$vhostController = new VhostController($config, $csrf, $vhostService, $apacheModulesService, $settingsStore);
+$settingsController = new SettingsController($config, $csrf, $settingsStore, $apacheModulesService, $httpClient);
 $logsController = new LogsController($config, $csrf);
 
 $route = $_GET['route'] ?? 'overview';
@@ -227,6 +227,16 @@ try {
             $vhostController->showDomains();
             break;
 
+        case 'domains-save':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $vhostController->saveDomain();
+                break;
+            }
+            header('Location: /?route=domains');
+            exit;
+            break;
+
         case 'vhosts':
             Session::requireAuth();
             $vhostController->dashboard();
@@ -256,6 +266,26 @@ try {
             Session::requireAuth();
             if ($method === 'POST') {
                 $settingsController->integrationsTestAction();
+                break;
+            }
+            header('Location: /?route=settings-integrations');
+            exit;
+            break;
+
+        case 'settings-integrations-npm-bootstrap':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $settingsController->integrationsNpmBootstrapAction();
+                break;
+            }
+            header('Location: /?route=settings-integrations');
+            exit;
+            break;
+
+        case 'settings-integrations-enable-cloudflare':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $settingsController->integrationsEnableCloudflareAction();
                 break;
             }
             header('Location: /?route=settings-integrations');

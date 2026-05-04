@@ -21,7 +21,8 @@ final class SettingsController extends BaseController
         \App\Core\Config $config,
         private readonly Csrf $csrf,
         private readonly SettingsStore $settingsStore,
-        private readonly ApacheModulesService $apacheModules
+        private readonly ApacheModulesService $apacheModules,
+        private readonly HttpClient $httpClient
     ) {
         parent::__construct($config);
     }
@@ -95,6 +96,10 @@ final class SettingsController extends BaseController
                     $providerKey = trim((string) ($_POST['provider'] ?? ''));
                     if (!isset($providers[$providerKey])) {
                         throw new RuntimeException('Invalid integration provider.');
+                    }
+
+                    if ($providerKey === 'cloudflare') {
+                        throw new RuntimeException('Use the Cloudflare enable flow from the integration modal.');
                     }
 
                     $name = trim((string) ($_POST['name'] ?? ''));
@@ -190,6 +195,7 @@ final class SettingsController extends BaseController
             });
 
             $this->persistIntegrations($integrations);
+            $this->syncLegacyIntegrationSettings($integrations);
         } catch (RuntimeException $e) {
             Session::setFlash('error', $e->getMessage());
         }
@@ -226,6 +232,91 @@ final class SettingsController extends BaseController
 
         http_response_code(404);
         echo json_encode(['ok' => false, 'message' => 'Integration not found.']);
+    }
+
+    public function integrationsNpmBootstrapAction(): void
+    {
+        header('Content-Type: application/json');
+
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        $baseUrl = trim((string) ($_POST['base_url'] ?? ''));
+        $adminIdentity = strtolower(trim((string) ($_POST['admin_identity'] ?? '')));
+        $adminSecret = trim((string) ($_POST['admin_secret'] ?? ''));
+
+        try {
+            if ($baseUrl === '' || filter_var($baseUrl, FILTER_VALIDATE_URL) === false) {
+                throw new RuntimeException('NPM Base URL must be a valid URL.');
+            }
+            if (filter_var($adminIdentity, FILTER_VALIDATE_EMAIL) === false || $adminSecret === '') {
+                throw new RuntimeException('Admin email and password are required.');
+            }
+
+            $provisioned = $this->provisionNpmServiceAccount($baseUrl, $adminIdentity, $adminSecret);
+            $bootstrapKey = $this->storeNpmBootstrapCredentials($provisioned['identity'], $provisioned['secret']);
+
+            echo json_encode([
+                'ok' => true,
+                'bootstrap_key' => $bootstrapKey,
+                'runtime_identity' => $provisioned['identity'],
+            ]);
+        } catch (RuntimeException $e) {
+            http_response_code(422);
+            echo json_encode(['ok' => false, 'message' => $e->getMessage()]);
+        }
+    }
+
+    public function integrationsEnableCloudflareAction(): void
+    {
+        header('Content-Type: application/json');
+
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        try {
+            $name = trim((string) ($_POST['name'] ?? ''));
+            if ($name === '') {
+                $name = 'Cloudflare';
+            }
+
+            $integrations = $this->integrationsFromStore();
+            $existingIndex = null;
+            foreach ($integrations as $idx => $row) {
+                if (($row['provider'] ?? '') === 'cloudflare') {
+                    $existingIndex = $idx;
+                    break;
+                }
+            }
+
+            $entry = [
+                'id' => $existingIndex !== null ? (string) ($integrations[$existingIndex]['id'] ?? 'cloudflare_enabled') : 'cloudflare_enabled',
+                'name' => $name,
+                'provider' => 'cloudflare',
+                'category' => 'dns',
+                'settings' => [],
+            ];
+
+            if ($existingIndex !== null) {
+                $integrations[$existingIndex] = $entry;
+            } else {
+                $integrations[] = $entry;
+            }
+
+            $this->persistIntegrations($integrations);
+            $this->settingsStore->setMany(['CF_ENABLED' => 'true']);
+
+            echo json_encode(['ok' => true]);
+        } catch (RuntimeException $e) {
+            http_response_code(422);
+            echo json_encode(['ok' => false, 'message' => $e->getMessage()]);
+        }
     }
 
     public function showApacheModules(): void
@@ -465,263 +556,42 @@ final class SettingsController extends BaseController
 
     public function showCloudflare(): void
     {
-        $this->render('settings/cloudflare.php', [
-            'csrfToken' => $this->csrf->token(),
-            'cfEnabled' => $this->config->getBool('CF_ENABLED', false),
-            'cfApiToken' => (string) $this->config->get('CF_API_TOKEN', ''),
-            'cfZoneId' => (string) $this->config->get('CF_ZONE_ID', ''),
-            'cfRecordIp' => (string) $this->config->get('CF_RECORD_IP', ''),
-            'cfProxied' => $this->config->getBool('CF_PROXIED', false),
-            'cfTtl' => (int) $this->config->get('CF_TTL', 120),
-            'mappingsCount' => count($this->cloudflareDomainsFromStore()),
-        ]);
+        $this->redirect('settings-integrations');
     }
 
     public function saveCloudflare(): void
     {
-        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
-            Session::setFlash('error', 'Invalid CSRF token.');
-            $this->redirect('settings-cloudflare');
-        }
-
-        $enabled = $this->postBool('cf_enabled');
-        $apiToken = trim((string) ($_POST['cf_api_token'] ?? ''));
-        $zoneId = trim((string) ($_POST['cf_zone_id'] ?? ''));
-        $recordIp = trim((string) ($_POST['cf_record_ip'] ?? ''));
-        $proxied = $this->postBool('cf_proxied');
-        $ttl = (int) ($_POST['cf_ttl'] ?? 120);
-
-        if ($enabled && ($apiToken === '' || $zoneId === '' || $recordIp === '')) {
-            Session::setFlash('error', 'CF API token, zone ID and record IP are required when Cloudflare is enabled.');
-            $this->redirect('settings-cloudflare');
-        }
-
-        if ($recordIp !== '' && filter_var($recordIp, FILTER_VALIDATE_IP) === false) {
-            Session::setFlash('error', 'Cloudflare record IP must be a valid IPv4 or IPv6 address.');
-            $this->redirect('settings-cloudflare');
-        }
-
-        if ($zoneId !== '' && preg_match('/^[a-f0-9]{32}$/i', $zoneId) !== 1) {
-            Session::setFlash('error', 'Cloudflare zone ID must be a 32-character hexadecimal value.');
-            $this->redirect('settings-cloudflare');
-        }
-
-        if ($ttl < 1 || $ttl > 86400) {
-            Session::setFlash('error', 'Cloudflare TTL must be between 1 and 86400 seconds.');
-            $this->redirect('settings-cloudflare');
-        }
-
-        try {
-            $this->settingsStore->setMany([
-                'CF_ENABLED' => $enabled ? 'true' : 'false',
-                'CF_API_TOKEN' => $apiToken,
-                'CF_ZONE_ID' => $zoneId,
-                'CF_RECORD_IP' => $recordIp,
-                'CF_PROXIED' => $proxied ? 'true' : 'false',
-                'CF_TTL' => (string) $ttl,
-            ]);
-        } catch (RuntimeException $e) {
-            Session::setFlash('error', $e->getMessage());
-            $this->redirect('settings-cloudflare');
-        }
-
-        Session::setFlash('success', 'Cloudflare settings saved.');
-        $this->redirect('settings-cloudflare');
+        $this->redirect('settings-integrations');
     }
 
     public function showCloudflareDomains(): void
     {
-        $this->render('settings/cloudflare-domains.php', [
-            'csrfToken' => $this->csrf->token(),
-            'mappings' => $this->cloudflareDomainsFromStore(),
-        ]);
+        $this->redirect('domains');
     }
 
     public function cloudflareDomainsAction(): void
     {
-        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
-            Session::setFlash('error', 'Invalid CSRF token.');
-            $this->redirect('settings-cloudflare-domains');
-        }
-
-        $intent = trim((string) ($_POST['intent'] ?? ''));
-        $mappings = $this->cloudflareDomainsFromStore();
-
-        if ($intent === 'add') {
-            $domain = strtolower(trim((string) ($_POST['domain'] ?? '')));
-            $zoneId = trim((string) ($_POST['zone_id'] ?? ''));
-            $apiToken = trim((string) ($_POST['api_token'] ?? ''));
-
-            if (!DomainValidator::isValid($domain)) {
-                Session::setFlash('error', 'Domain must be a valid FQDN.');
-                $this->redirect('settings-cloudflare-domains');
-            }
-
-            if (preg_match('/^[a-f0-9]{32}$/i', $zoneId) !== 1) {
-                Session::setFlash('error', 'Zone ID must be a 32-character hexadecimal value.');
-                $this->redirect('settings-cloudflare-domains');
-            }
-
-            if ($apiToken === '') {
-                Session::setFlash('error', 'API token is required for domain mapping.');
-                $this->redirect('settings-cloudflare-domains');
-            }
-
-            $replaced = false;
-            foreach ($mappings as $index => $mapping) {
-                if (($mapping['domain'] ?? '') === $domain) {
-                    $mappings[$index] = ['domain' => $domain, 'zone_id' => $zoneId, 'api_token' => $apiToken];
-                    $replaced = true;
-                    break;
-                }
-            }
-
-            if (!$replaced) {
-                $mappings[] = ['domain' => $domain, 'zone_id' => $zoneId, 'api_token' => $apiToken];
-            }
-
-            usort($mappings, static fn (array $a, array $b): int => strcasecmp((string) ($a['domain'] ?? ''), (string) ($b['domain'] ?? '')));
-
-            $this->persistCloudflareMappings($mappings);
-            Session::setFlash('success', 'Cloudflare domain mapping saved.');
-            $this->redirect('settings-cloudflare-domains');
-        }
-
-        if ($intent === 'delete') {
-            $domain = strtolower(trim((string) ($_POST['domain'] ?? '')));
-            $mappings = array_values(array_filter(
-                $mappings,
-                static fn (array $mapping): bool => strtolower((string) ($mapping['domain'] ?? '')) !== $domain
-            ));
-
-            $this->persistCloudflareMappings($mappings);
-            Session::setFlash('success', 'Cloudflare domain mapping removed.');
-            $this->redirect('settings-cloudflare-domains');
-        }
-
-        Session::setFlash('error', 'Invalid Cloudflare domains action.');
-        $this->redirect('settings-cloudflare-domains');
+        $this->redirect('domains');
     }
 
     public function showNpm(): void
     {
-        $this->render('settings/npm.php', [
-            'csrfToken' => $this->csrf->token(),
-            'npmEnabled' => $this->config->getBool('NPM_ENABLED', false),
-            'npmBaseUrl' => (string) $this->config->get('NPM_BASE_URL', 'http://localhost:81'),
-            'npmIdentity' => (string) $this->config->get('NPM_IDENTITY', ''),
-            'npmSecret' => (string) $this->config->get('NPM_SECRET', ''),
-            'npmForwardHost' => (string) $this->config->get('NPM_FORWARD_HOST', '127.0.0.1'),
-            'npmForwardPort' => (int) $this->config->get('NPM_FORWARD_PORT', 80),
-        ]);
+        $this->redirect('settings-integrations');
     }
 
     public function saveNpm(): void
     {
-        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
-            Session::setFlash('error', 'Invalid CSRF token.');
-            $this->redirect('settings-npm');
-        }
-
-        $enabled = $this->postBool('npm_enabled');
-        $baseUrl = trim((string) ($_POST['npm_base_url'] ?? ''));
-        $identity = strtolower(trim((string) ($_POST['npm_identity'] ?? '')));
-        $secret = trim((string) ($_POST['npm_secret'] ?? ''));
-        $forwardHost = trim((string) ($_POST['npm_forward_host'] ?? ''));
-        $forwardPort = (int) ($_POST['npm_forward_port'] ?? 80);
-
-        if ($enabled) {
-            if ($baseUrl === '' || filter_var($baseUrl, FILTER_VALIDATE_URL) === false) {
-                Session::setFlash('error', 'NPM Base URL must be a valid URL.');
-                $this->redirect('settings-npm');
-            }
-            if ($identity === '' || $secret === '') {
-                Session::setFlash('error', 'NPM identity and secret are required when NPM is enabled.');
-                $this->redirect('settings-npm');
-            }
-
-            if (filter_var($identity, FILTER_VALIDATE_EMAIL) === false) {
-                Session::setFlash('error', 'NPM identity must be a valid email address.');
-                $this->redirect('settings-npm');
-            }
-        }
-
-        if ($forwardHost === '' || !preg_match('/^[a-zA-Z0-9.-]+$/', $forwardHost)) {
-            Session::setFlash('error', 'NPM forward host contains invalid characters.');
-            $this->redirect('settings-npm');
-        }
-
-        if ($forwardPort < 1 || $forwardPort > 65535) {
-            Session::setFlash('error', 'NPM forward port must be between 1 and 65535.');
-            $this->redirect('settings-npm');
-        }
-
-        try {
-            $this->settingsStore->setMany([
-                'NPM_ENABLED' => $enabled ? 'true' : 'false',
-                'NPM_BASE_URL' => $baseUrl,
-                'NPM_IDENTITY' => $identity,
-                'NPM_SECRET' => $secret,
-                'NPM_FORWARD_HOST' => $forwardHost,
-                'NPM_FORWARD_PORT' => (string) $forwardPort,
-            ]);
-        } catch (RuntimeException $e) {
-            Session::setFlash('error', $e->getMessage());
-            $this->redirect('settings-npm');
-        }
-
-        Session::setFlash('success', 'NPM settings saved.');
-        $this->redirect('settings-npm');
+        $this->redirect('settings-integrations');
     }
 
     public function showNpmSsl(): void
     {
-        $this->render('settings/npm-ssl.php', [
-            'csrfToken' => $this->csrf->token(),
-            'npmSslEnabled' => $this->config->getBool('NPM_SSL_ENABLED', false),
-            'npmCertificateId' => (int) $this->config->get('NPM_CERTIFICATE_ID', 0),
-            'npmSslForced' => $this->config->getBool('NPM_SSL_FORCED', false),
-            'npmHttp2Support' => $this->config->getBool('NPM_HTTP2_SUPPORT', false),
-            'npmHstsEnabled' => $this->config->getBool('NPM_HSTS_ENABLED', false),
-            'npmHstsSubdomains' => $this->config->getBool('NPM_HSTS_SUBDOMAINS', false),
-        ]);
+        $this->redirect('settings-integrations');
     }
 
     public function saveNpmSsl(): void
     {
-        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
-            Session::setFlash('error', 'Invalid CSRF token.');
-            $this->redirect('settings-npm-ssl');
-        }
-
-        $sslEnabled = $this->postBool('npm_ssl_enabled');
-        $certificateId = (int) ($_POST['npm_certificate_id'] ?? 0);
-        $sslForced = $this->postBool('npm_ssl_forced');
-        $http2Support = $this->postBool('npm_http2_support');
-        $hstsEnabled = $this->postBool('npm_hsts_enabled');
-        $hstsSubdomains = $this->postBool('npm_hsts_subdomains');
-
-        if ($sslEnabled && $certificateId <= 0) {
-            Session::setFlash('error', 'Certificate ID is required when NPM SSL is enabled.');
-            $this->redirect('settings-npm-ssl');
-        }
-
-        try {
-            $this->settingsStore->setMany([
-                'NPM_SSL_ENABLED' => $sslEnabled ? 'true' : 'false',
-                'NPM_CERTIFICATE_ID' => (string) $certificateId,
-                'NPM_SSL_FORCED' => $sslForced ? 'true' : 'false',
-                'NPM_HTTP2_SUPPORT' => $http2Support ? 'true' : 'false',
-                'NPM_HSTS_ENABLED' => $hstsEnabled ? 'true' : 'false',
-                'NPM_HSTS_SUBDOMAINS' => $hstsSubdomains ? 'true' : 'false',
-            ]);
-        } catch (RuntimeException $e) {
-            Session::setFlash('error', $e->getMessage());
-            $this->redirect('settings-npm-ssl');
-        }
-
-        Session::setFlash('success', 'NPM SSL settings saved.');
-        $this->redirect('settings-npm-ssl');
+        $this->redirect('settings-integrations');
     }
 
     public function changePassword(): void
@@ -912,6 +782,84 @@ final class SettingsController extends BaseController
     }
 
     /**
+     * @param list<array{id:string,name:string,provider:string,category:string,settings:array<string,string>}> $integrations
+     */
+    private function syncLegacyIntegrationSettings(array $integrations): void
+    {
+        $firstNpm = null;
+        $hasCloudflare = false;
+
+        foreach ($integrations as $integration) {
+            if (($integration['provider'] ?? '') === 'npm' && $firstNpm === null) {
+                $firstNpm = is_array($integration['settings'] ?? null) ? $integration['settings'] : [];
+            }
+            if (($integration['provider'] ?? '') === 'cloudflare') {
+                $hasCloudflare = true;
+            }
+        }
+
+        $settings = [
+            'CF_ENABLED' => $hasCloudflare ? 'true' : 'false',
+            'NPM_ENABLED' => $firstNpm !== null ? 'true' : 'false',
+        ];
+
+        if ($firstNpm !== null) {
+            $settings['NPM_BASE_URL'] = (string) ($firstNpm['base_url'] ?? '');
+            $settings['NPM_IDENTITY'] = (string) ($firstNpm['identity'] ?? '');
+            $settings['NPM_SECRET'] = (string) ($firstNpm['secret'] ?? '');
+            $settings['NPM_FORWARD_HOST'] = (string) ($firstNpm['forward_host'] ?? '127.0.0.1');
+            $settings['NPM_FORWARD_PORT'] = (string) ($firstNpm['forward_port'] ?? '80');
+        }
+
+        $this->settingsStore->setMany($settings);
+    }
+
+    private function storeNpmBootstrapCredentials(string $identity, string $secret): string
+    {
+        $key = bin2hex(random_bytes(16));
+        $store = $_SESSION['npm_integration_bootstrap'] ?? [];
+        if (!is_array($store)) {
+            $store = [];
+        }
+
+        $store[$key] = [
+            'identity' => $identity,
+            'secret' => $secret,
+            'created_at' => time(),
+        ];
+
+        $_SESSION['npm_integration_bootstrap'] = $store;
+
+        return $key;
+    }
+
+    /**
+     * @return array{identity:string,secret:string}|null
+     */
+    private function consumeNpmBootstrapCredentials(string $key): ?array
+    {
+        $store = $_SESSION['npm_integration_bootstrap'] ?? [];
+        if (!is_array($store) || !isset($store[$key]) || !is_array($store[$key])) {
+            return null;
+        }
+
+        $entry = $store[$key];
+        unset($store[$key]);
+        $_SESSION['npm_integration_bootstrap'] = $store;
+
+        $identity = trim((string) ($entry['identity'] ?? ''));
+        $secret = trim((string) ($entry['secret'] ?? ''));
+        if ($identity === '' || $secret === '') {
+            return null;
+        }
+
+        return [
+            'identity' => $identity,
+            'secret' => $secret,
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $input
      * @param array<string, mixed>|null $existingSettings
      * @return array<string, string>
@@ -950,9 +898,33 @@ final class SettingsController extends BaseController
             if (filter_var($settings['base_url'] ?? '', FILTER_VALIDATE_URL) === false) {
                 throw new RuntimeException('NPM Base URL must be a valid URL.');
             }
-            if (filter_var($settings['identity'] ?? '', FILTER_VALIDATE_EMAIL) === false) {
-                throw new RuntimeException('NPM identity must be a valid email address.');
+
+            $bootstrapKey = trim((string) ($settings['bootstrap_key'] ?? ''));
+            if ($bootstrapKey !== '') {
+                $bootstrapCreds = $this->consumeNpmBootstrapCredentials($bootstrapKey);
+                if ($bootstrapCreds === null) {
+                    throw new RuntimeException('NPM bootstrap session expired. Use Next again to provision the runtime account.');
+                }
+
+                $settings['identity'] = $bootstrapCreds['identity'];
+                $settings['secret'] = $bootstrapCreds['secret'];
             }
+
+            if ((string) ($settings['identity'] ?? '') === '' || (string) ($settings['secret'] ?? '') === '') {
+                if ($existingSettings !== null) {
+                    $settings['identity'] = (string) ($existingSettings['identity'] ?? '');
+                    $settings['secret'] = (string) ($existingSettings['secret'] ?? '');
+                }
+            }
+
+            if (filter_var($settings['identity'] ?? '', FILTER_VALIDATE_EMAIL) === false) {
+                throw new RuntimeException('NPM runtime identity must be a valid email address.');
+            }
+
+            if ((string) ($settings['secret'] ?? '') === '') {
+                throw new RuntimeException('NPM runtime secret is missing. Use Next to create a VHM account first.');
+            }
+
             if (($settings['forward_host'] ?? '') === '' || preg_match('/^[a-zA-Z0-9.-]+$/', $settings['forward_host']) !== 1) {
                 throw new RuntimeException('NPM forward host contains invalid characters.');
             }
@@ -962,23 +934,11 @@ final class SettingsController extends BaseController
                 throw new RuntimeException('NPM forward port must be between 1 and 65535.');
             }
             $settings['forward_port'] = (string) $forwardPort;
+            $settings['bootstrap_key'] = '';
         }
 
         if ($providerKey === 'cloudflare') {
-            if (preg_match('/^[a-f0-9]{32}$/i', (string) ($settings['zone_id'] ?? '')) !== 1) {
-                throw new RuntimeException('Cloudflare zone ID must be a 32-character hexadecimal value.');
-            }
-            if (filter_var((string) ($settings['record_ip'] ?? ''), FILTER_VALIDATE_IP) === false) {
-                throw new RuntimeException('Cloudflare record IP must be a valid IPv4 or IPv6 address.');
-            }
-
-            $ttl = (int) ($settings['ttl'] ?? 0);
-            if ($ttl < 1 || $ttl > 86400) {
-                throw new RuntimeException('Cloudflare TTL must be between 1 and 86400 seconds.');
-            }
-
-            $settings['ttl'] = (string) $ttl;
-            $settings['proxied'] = ($settings['proxied'] ?? '0') === '1' ? '1' : '0';
+            return [];
         }
 
         return $settings;
@@ -1016,15 +976,8 @@ final class SettingsController extends BaseController
         }
 
         if (($integration['provider'] ?? '') === 'cloudflare') {
-            $http = new HttpClient($verifySsl);
-            $result = $http->get(
-                'https://api.cloudflare.com/client/v4/zones/' . rawurlencode((string) ($settings['zone_id'] ?? '')),
-                ['Authorization: Bearer ' . (string) ($settings['api_token'] ?? '')]
-            );
-
-            if ($result['status'] !== 200 || empty($result['body']['success'])) {
-                $errors = json_encode($result['body']['errors'] ?? [], JSON_UNESCAPED_SLASHES) ?: '[]';
-                throw new RuntimeException('Cloudflare connection test failed: ' . $errors);
+            if (!$this->config->getBool('CF_ENABLED', false)) {
+                throw new RuntimeException('Cloudflare integration is currently disabled. Enable it from the Integrations modal.');
             }
 
             return;
@@ -1519,11 +1472,14 @@ final class SettingsController extends BaseController
 
         if (is_array($decoded)) {
             foreach ($decoded as $entry) {
-                if (!is_string($entry)) {
+                if (is_string($entry)) {
+                    $domain = strtolower(trim($entry));
+                } elseif (is_array($entry)) {
+                    $domain = strtolower(trim((string) ($entry['domain'] ?? '')));
+                } else {
                     continue;
                 }
 
-                $domain = strtolower(trim($entry));
                 if ($domain !== '' && DomainValidator::isValid($domain) && !in_array($domain, $domains, true)) {
                     $domains[] = $domain;
                 }
@@ -1550,5 +1506,257 @@ final class SettingsController extends BaseController
     private function postBool(string $key): bool
     {
         return isset($_POST[$key]) && (string) $_POST[$key] === '1';
+    }
+
+    /**
+     * @return array{identity:string,secret:string}
+     */
+    private function provisionNpmServiceAccount(string $baseUrl, string $adminIdentity, string $adminSecret): array
+    {
+        $tokenUrl = rtrim($baseUrl, '/') . '/api/tokens';
+        $adminToken = $this->resolveNpmAdminToken($baseUrl, $adminIdentity, $adminSecret);
+
+        $serviceIdentityBase = $this->buildNpmServiceIdentity($adminIdentity);
+        $serviceIdentity = $serviceIdentityBase;
+        $headers = ["Authorization: Bearer {$adminToken}"];
+
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $serviceSecret = bin2hex(random_bytes(32));
+            $createUserResult = $this->createNpmUserWithFallback(
+                rtrim($baseUrl, '/') . '/api/users',
+                $headers,
+                $serviceIdentity,
+                $serviceSecret,
+                false
+            );
+
+            if (!in_array((int) ($createUserResult['status'] ?? 0), [200, 201], true)) {
+                if ($this->isNpmDuplicateUserError($createUserResult)) {
+                    $serviceIdentity = $this->withNpmIdentitySuffix($serviceIdentityBase);
+                    continue;
+                }
+
+                $body = json_encode($createUserResult['body'] ?? [], JSON_UNESCAPED_SLASHES);
+                throw new RuntimeException('NPM service account could not be created: ' . $body);
+            }
+
+            $serviceTokenResult = $this->httpClient->post($tokenUrl, [
+                'identity' => $serviceIdentity,
+                'secret' => $serviceSecret,
+            ]);
+
+            if ((int) ($serviceTokenResult['status'] ?? 0) !== 200 || trim((string) ($serviceTokenResult['body']['token'] ?? '')) === '') {
+                throw new RuntimeException('NPM service account was created but token verification failed.');
+            }
+
+            return [
+                'identity' => $serviceIdentity,
+                'secret' => $serviceSecret,
+            ];
+        }
+
+        throw new RuntimeException('NPM service account creation failed because generated runtime identities already exist.');
+    }
+
+    private function resolveNpmAdminToken(string $baseUrl, string $adminIdentity, string $adminSecret): string
+    {
+        $tokenUrl = rtrim($baseUrl, '/') . '/api/tokens';
+
+        try {
+            $authResult = $this->httpClient->post($tokenUrl, [
+                'identity' => $adminIdentity,
+                'secret' => $adminSecret,
+            ]);
+        } catch (RuntimeException $e) {
+            throw new RuntimeException('NPM admin authentication request failed: ' . $e->getMessage());
+        }
+
+        if ((int) ($authResult['status'] ?? 0) === 200 && is_array($authResult['body'] ?? null)) {
+            $adminToken = trim((string) ($authResult['body']['token'] ?? ''));
+            if ($adminToken !== '') {
+                return $adminToken;
+            }
+        }
+
+        // Allow pasting an existing bearer token into the secret field.
+        if (substr_count($adminSecret, '.') === 2) {
+            try {
+                $meResult = $this->httpClient->get(rtrim($baseUrl, '/') . '/api/users/me', [
+                    'Authorization: Bearer ' . $adminSecret,
+                ]);
+
+                if ((int) ($meResult['status'] ?? 0) === 200) {
+                    return $adminSecret;
+                }
+            } catch (RuntimeException) {
+                // Fall through to detailed auth error.
+            }
+        }
+
+        $status = (int) ($authResult['status'] ?? 0);
+        $detail = $this->extractNpmErrorMessage($authResult['body'] ?? null);
+        if ($detail !== '') {
+            throw new RuntimeException('NPM admin authentication failed while provisioning service account: ' . $detail);
+        }
+
+        throw new RuntimeException('NPM admin authentication failed while provisioning service account (HTTP ' . $status . ').');
+    }
+
+    private function extractNpmErrorMessage(mixed $body): string
+    {
+        if (is_array($body)) {
+            $nested = trim((string) (($body['error']['message'] ?? '') ?: ''));
+            if ($nested !== '') {
+                return $nested;
+            }
+
+            $top = trim((string) ($body['message'] ?? ''));
+            if ($top !== '') {
+                return $top;
+            }
+
+            $encoded = json_encode($body, JSON_UNESCAPED_SLASHES);
+            return is_string($encoded) ? $encoded : '';
+        }
+
+        if (is_string($body)) {
+            return trim($body);
+        }
+
+        return '';
+    }
+
+    /**
+     * @param list<string> $headers
+     * @return array{status:int,body:mixed}
+     */
+    private function createNpmUserWithFallback(
+        string $usersUrl,
+        array $headers,
+        string $identity,
+        string $secret,
+        bool $isAdmin
+    ): array {
+        $payloads = [
+            [
+                'name' => 'Vhost Manager',
+                'nickname' => 'VHM',
+                'email' => $identity,
+                'roles' => [],
+                'is_disabled' => false,
+                'auth' => [
+                    'type' => 'password',
+                    'secret' => $secret,
+                ],
+            ],
+            [
+                'name' => 'Vhost Manager',
+                'nickname' => 'VHM',
+                'email' => $identity,
+                'auth' => [
+                    'type' => 'password',
+                    'secret' => $secret,
+                ],
+            ],
+            [
+                'email' => $identity,
+                'password' => $secret,
+                'is_admin' => $isAdmin,
+            ],
+            [
+                'name' => 'Vhost Manager',
+                'nickname' => 'VHM',
+                'email' => $identity,
+                'is_admin' => $isAdmin,
+                'auth' => [
+                    'type' => 'password',
+                    'secret' => $secret,
+                ],
+            ],
+        ];
+
+        $lastResult = ['status' => 0, 'body' => ['message' => 'No request attempted']];
+
+        foreach ($payloads as $payload) {
+            $result = $this->httpClient->post($usersUrl, $payload, $headers);
+            $lastResult = [
+                'status' => (int) ($result['status'] ?? 0),
+                'body' => $result['body'] ?? [],
+            ];
+
+            if (in_array((int) ($lastResult['status'] ?? 0), [200, 201], true)) {
+                return $lastResult;
+            }
+
+            $status = (int) ($lastResult['status'] ?? 0);
+            if ($status >= 400 && $status < 500 && !$this->isNpmSchemaValidationError($lastResult)) {
+                return $lastResult;
+            }
+            if ($status >= 500) {
+                return $lastResult;
+            }
+        }
+
+        return $lastResult;
+    }
+
+    /**
+     * @param array{status:int,body:mixed} $result
+     */
+    private function isNpmDuplicateUserError(array $result): bool
+    {
+        $body = json_encode($result['body'] ?? [], JSON_UNESCAPED_SLASHES);
+        if (!is_string($body) || $body === '') {
+            return false;
+        }
+
+        $text = strtolower($body);
+
+        return (str_contains($text, 'already') || str_contains($text, 'exists'))
+            && (str_contains($text, 'email') || str_contains($text, 'user'));
+    }
+
+    /**
+     * @param array{status:int,body:mixed} $result
+     */
+    private function isNpmSchemaValidationError(array $result): bool
+    {
+        $body = json_encode($result['body'] ?? [], JSON_UNESCAPED_SLASHES);
+        if (!is_string($body) || $body === '') {
+            return false;
+        }
+
+        $text = strtolower($body);
+
+        return str_contains($text, 'additional properties')
+            || str_contains($text, 'required property')
+            || str_contains($text, 'must have required property')
+            || str_contains($text, 'must not have additional properties');
+    }
+
+    private function withNpmIdentitySuffix(string $identity): string
+    {
+        $atPos = strpos($identity, '@');
+        if ($atPos === false) {
+            return $identity . '-' . substr(bin2hex(random_bytes(2)), 0, 4);
+        }
+
+        $local = substr($identity, 0, $atPos);
+        $domain = substr($identity, $atPos + 1);
+
+        return $local . '-' . substr(bin2hex(random_bytes(2)), 0, 4) . '@' . $domain;
+    }
+
+    private function buildNpmServiceIdentity(string $email): string
+    {
+        $localPart = strtolower(trim((string) strtok($email, '@')));
+        $localPart = preg_replace('/[^a-z0-9._-]/', '', $localPart);
+        $localPart = is_string($localPart) ? trim($localPart, '._-') : '';
+
+        if ($localPart === '') {
+            $localPart = 'vhm';
+        }
+
+        return $localPart . '@vhost-manager.npm';
     }
 }

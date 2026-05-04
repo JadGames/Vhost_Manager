@@ -8,6 +8,7 @@ use App\Core\Config;
 use App\Core\Session;
 use App\Security\Csrf;
 use App\Services\ApacheModulesService;
+use App\Services\SettingsStore;
 use App\Services\VhostService;
 use RuntimeException;
 
@@ -17,7 +18,8 @@ final class VhostController extends BaseController
         Config $config,
         private readonly Csrf $csrf,
         private readonly VhostService $service,
-        private readonly ApacheModulesService $apacheModules
+        private readonly ApacheModulesService $apacheModules,
+        private readonly SettingsStore $settingsStore
     ) {
         parent::__construct($config);
     }
@@ -53,7 +55,84 @@ final class VhostController extends BaseController
 
     public function showDomains(): void
     {
-        $this->render('domains/index.php');
+        $this->render('domains/index.php', [
+            'csrfToken' => $this->csrf->token(),
+            'cfEnabled' => $this->config->getBool('CF_ENABLED', false),
+            'domains' => $this->domainsFromStore(),
+        ]);
+    }
+
+    public function saveDomain(): void
+    {
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            Session::setFlash('error', 'Invalid CSRF token.');
+            $this->redirect('domains');
+        }
+
+        $domain = strtolower(trim((string) ($_POST['domain'] ?? '')));
+        if (!\App\Security\DomainValidator::isValid($domain)) {
+            Session::setFlash('error', 'Domain must be a valid FQDN.');
+            $this->redirect('domains');
+        }
+
+        $domains = $this->domainsFromStore();
+        $domains = array_values(array_filter(
+            $domains,
+            static fn (array $row): bool => strtolower((string) ($row['domain'] ?? '')) !== $domain
+        ));
+
+        $record = [
+            'domain' => $domain,
+            'updated_at' => date('c'),
+        ];
+
+        if ($this->config->getBool('CF_ENABLED', false)) {
+            $zoneId = trim((string) ($_POST['cf_zone_id'] ?? ''));
+            $apiToken = trim((string) ($_POST['cf_api_token'] ?? ''));
+            $recordIp = trim((string) ($_POST['cf_record_ip'] ?? ''));
+            $proxied = isset($_POST['cf_proxied']) && (string) $_POST['cf_proxied'] === '1';
+            $ttl = (int) ($_POST['cf_ttl'] ?? 120);
+
+            if (($zoneId !== '' && $apiToken === '') || ($zoneId === '' && $apiToken !== '')) {
+                Session::setFlash('error', 'Cloudflare zone ID and API token must be provided together.');
+                $this->redirect('domains');
+            }
+
+            if ($zoneId !== '' && preg_match('/^[a-f0-9]{32}$/i', $zoneId) !== 1) {
+                Session::setFlash('error', 'Cloudflare zone ID must be a 32-character hexadecimal value.');
+                $this->redirect('domains');
+            }
+
+            if ($recordIp !== '' && filter_var($recordIp, FILTER_VALIDATE_IP) === false) {
+                Session::setFlash('error', 'Cloudflare record IP must be a valid IPv4 or IPv6 address.');
+                $this->redirect('domains');
+            }
+
+            if ($ttl < 1 || $ttl > 86400) {
+                Session::setFlash('error', 'Cloudflare TTL must be between 1 and 86400 seconds.');
+                $this->redirect('domains');
+            }
+
+            $record['cloudflare'] = [
+                'zone_id' => $zoneId,
+                'api_token' => $apiToken,
+                'record_ip' => $recordIp,
+                'proxied' => $proxied,
+                'ttl' => $ttl,
+            ];
+
+            $this->upsertCloudflareDomainMapping($domain, $zoneId, $apiToken);
+        }
+
+        $domains[] = $record;
+        usort($domains, static fn (array $a, array $b): int => strcasecmp((string) ($a['domain'] ?? ''), (string) ($b['domain'] ?? '')));
+
+        $this->settingsStore->setMany([
+            'DOMAINS_JSON' => json_encode($domains, JSON_UNESCAPED_SLASHES) ?: '[]',
+        ]);
+
+        Session::setFlash('success', 'Domain settings saved.');
+        $this->redirect('domains');
     }
 
     public function dashboard(): void
@@ -367,5 +446,81 @@ final class VhostController extends BaseController
         }
 
         return $count;
+    }
+
+    /**
+     * @return list<array{domain:string,updated_at:string,cloudflare?:array{zone_id:string,api_token:string,record_ip:string,proxied:bool,ttl:int}}>
+     */
+    private function domainsFromStore(): array
+    {
+        $raw = (string) $this->config->get('DOMAINS_JSON', '[]');
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($decoded as $entry) {
+            if (is_string($entry)) {
+                $domain = strtolower(trim($entry));
+                if ($domain !== '' && \App\Security\DomainValidator::isValid($domain)) {
+                    $rows[] = ['domain' => $domain, 'updated_at' => ''];
+                }
+                continue;
+            }
+
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $domain = strtolower(trim((string) ($entry['domain'] ?? '')));
+            if ($domain === '' || !\App\Security\DomainValidator::isValid($domain)) {
+                continue;
+            }
+
+            $row = [
+                'domain' => $domain,
+                'updated_at' => trim((string) ($entry['updated_at'] ?? '')),
+            ];
+
+            if (is_array($entry['cloudflare'] ?? null)) {
+                $row['cloudflare'] = [
+                    'zone_id' => trim((string) ($entry['cloudflare']['zone_id'] ?? '')),
+                    'api_token' => trim((string) ($entry['cloudflare']['api_token'] ?? '')),
+                    'record_ip' => trim((string) ($entry['cloudflare']['record_ip'] ?? '')),
+                    'proxied' => !empty($entry['cloudflare']['proxied']),
+                    'ttl' => max(1, (int) ($entry['cloudflare']['ttl'] ?? 120)),
+                ];
+            }
+
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+
+    private function upsertCloudflareDomainMapping(string $domain, string $zoneId, string $apiToken): void
+    {
+        $raw = (string) $this->config->get('CF_DOMAINS_JSON', '[]');
+        $decoded = json_decode($raw, true);
+        $mappings = is_array($decoded) ? $decoded : [];
+
+        $mappings = array_values(array_filter(
+            $mappings,
+            static fn (array $row): bool => strtolower(trim((string) ($row['domain'] ?? ''))) !== $domain
+        ));
+
+        if ($zoneId !== '' && $apiToken !== '') {
+            $mappings[] = [
+                'domain' => $domain,
+                'zone_id' => $zoneId,
+                'api_token' => $apiToken,
+            ];
+            usort($mappings, static fn (array $a, array $b): int => strcasecmp((string) ($a['domain'] ?? ''), (string) ($b['domain'] ?? '')));
+        }
+
+        $this->settingsStore->setMany([
+            'CF_DOMAINS_JSON' => json_encode($mappings, JSON_UNESCAPED_SLASHES) ?: '[]',
+        ]);
     }
 }

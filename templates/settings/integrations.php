@@ -47,11 +47,13 @@
                     <div class="integration-tile__provider"><?= e((string) ($pInfo['label'] ?? ($int['provider'] ?? ''))) ?></div>
                 </div>
                 <div class="integration-tile__actions">
-                    <button class="btn btn--ghost btn--sm"
-                            type="button"
-                            data-test-integration="<?= e((string) ($int['id'] ?? '')) ?>">
-                        <i class="fa-solid fa-bolt"></i> Test
-                    </button>
+                    <?php if (($int['provider'] ?? '') !== 'cloudflare'): ?>
+                        <button class="btn btn--ghost btn--sm"
+                                type="button"
+                                data-test-integration="<?= e((string) ($int['id'] ?? '')) ?>">
+                            <i class="fa-solid fa-bolt"></i> Test
+                        </button>
+                    <?php endif; ?>
                 </div>
             </div>
         <?php endforeach; ?>
@@ -136,10 +138,12 @@
         <form class="form" method="post" action="/?route=settings-integrations-action" autocomplete="off" id="add-integration-form">
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
             <input type="hidden" name="intent" value="add">
+            <input type="hidden" name="settings[bootstrap_key]" id="add_npm_bootstrap_key" value="">
 
             <div class="form-group">
                 <label class="form-label" for="add_name">Custom Name</label>
                 <input class="form-input" id="add_name" type="text" name="name" placeholder="e.g. Main NPM, Production CF" required>
+                <span class="form-field-error" id="err_add_name" hidden></span>
                 <span class="form-hint">A label to identify this integration — you can add multiple of the same provider.</span>
             </div>
 
@@ -155,57 +159,75 @@
                 </select>
             </div>
 
-            <!-- Dynamic provider fields -->
-            <?php foreach ($allProviders as $key => $p): ?>
-                <div class="provider-fields" data-provider="<?= e($key) ?>">
-                    <?php foreach ($p['fields'] as $field): ?>
-                        <div class="form-group" style="margin-bottom: 14px;">
-                            <label class="form-label" for="add_<?= e($key) ?>_<?= e($field['name']) ?>">
-                                <?= e($field['label']) ?>
-                                <?php if ($field['required']): ?><span style="color:var(--danger)"> *</span><?php endif; ?>
-                            </label>
-                            <?php if ($field['type'] === 'checkbox'): ?>
-                                <label class="form-check">
-                                    <input type="checkbox"
-                                           id="add_<?= e($key) ?>_<?= e($field['name']) ?>"
-                                           name="settings[<?= e($field['name']) ?>]"
-                                           value="1"
-                                           <?= $field['default'] === '1' ? 'checked' : '' ?>>
-                                    <?= e($field['label']) ?>
-                                </label>
-                            <?php elseif ($field['type'] === 'password'): ?>
-                                <div class="secret-input-wrap">
-                                    <input class="form-input"
-                                           id="add_<?= e($key) ?>_<?= e($field['name']) ?>"
-                                           type="password"
-                                           name="settings[<?= e($field['name']) ?>]"
-                                           placeholder="<?= e($field['placeholder']) ?>"
-                                           autocomplete="off"
-                                           spellcheck="false">
-                                    <button class="secret-toggle-btn" type="button"
-                                            data-secret-target="add_<?= e($key) ?>_<?= e($field['name']) ?>"
-                                            aria-label="Show secret">
-                                        <i class="fa-solid fa-eye"></i>
-                                    </button>
-                                </div>
-                            <?php else: ?>
-                                <input class="form-input"
-                                       id="add_<?= e($key) ?>_<?= e($field['name']) ?>"
-                                       type="<?= e($field['type']) ?>"
-                                       name="settings[<?= e($field['name']) ?>]"
-                                       value="<?= e($field['default']) ?>"
-                                       placeholder="<?= e($field['placeholder']) ?>"
-                                       <?= $field['required'] ? 'required' : '' ?>>
-                            <?php endif; ?>
+            <div class="provider-fields" data-provider="npm" id="add-npm-fields">
+                <p class="form-hint" style="margin-bottom: 12px;">Enter one-time admin credentials to provision a dedicated non-admin VHM runtime account. Admin credentials are never stored.</p>
+
+                <div id="add-npm-step-1">
+                    <div class="form-group" style="margin-bottom: 14px;">
+                        <label class="form-label" for="add_npm_base_url">Base URL <span style="color:var(--danger)"> *</span></label>
+                        <input class="form-input" id="add_npm_base_url" type="url" name="settings[base_url]" placeholder="http://npm:81" value="http://npm:81">
+                        <span class="form-field-error" id="err_npm_base_url" hidden></span>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 14px;">
+                        <label class="form-label" for="add_npm_admin_identity">Admin Email <span style="color:var(--danger)"> *</span></label>
+                        <input class="form-input" id="add_npm_admin_identity" type="email" placeholder="admin@example.com" autocomplete="off">
+                        <span class="form-field-error" id="err_npm_admin_identity" hidden></span>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 14px;">
+                        <label class="form-label" for="add_npm_admin_secret">Admin Password or API Token <span style="color:var(--danger)"> *</span></label>
+                        <div class="secret-input-wrap">
+                            <input class="form-input" id="add_npm_admin_secret" type="password" placeholder="Admin password or Bearer token" autocomplete="off" spellcheck="false">
+                            <button class="secret-toggle-btn" type="button" data-secret-target="add_npm_admin_secret" aria-label="Show secret">
+                                <i class="fa-solid fa-eye"></i>
+                            </button>
                         </div>
-                    <?php endforeach; ?>
+                        <span class="form-field-error" id="err_npm_admin_secret" hidden></span>
+                    </div>
+                    <p class="form-field-error" id="err_npm_step1" hidden style="margin-top:6px;"></p>
                 </div>
-            <?php endforeach; ?>
+
+                <div id="add-npm-step-2" hidden>
+                    <div class="form-group" style="margin-bottom: 14px;">
+                        <label class="form-label" for="add_npm_runtime_identity">Runtime Account</label>
+                        <input class="form-input" id="add_npm_runtime_identity" type="text" readonly>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group" style="margin-bottom: 14px;">
+                            <label class="form-label" for="add_npm_forward_host">Forward Host <span style="color:var(--danger)"> *</span></label>
+                            <input class="form-input" id="add_npm_forward_host" type="text" name="settings[forward_host]" placeholder="127.0.0.1" value="127.0.0.1">
+                            <span class="form-field-error" id="err_npm_forward_host" hidden></span>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 14px;">
+                            <label class="form-label" for="add_npm_forward_port">Forward Port <span style="color:var(--danger)"> *</span></label>
+                            <input class="form-input" id="add_npm_forward_port" type="number" name="settings[forward_port]" min="1" max="65535" value="80">
+                            <span class="form-field-error" id="err_npm_forward_port" hidden></span>
+                        </div>
+                    </div>
+                    <p class="form-field-error" id="err_npm_step2" hidden style="margin-top:6px;"></p>
+                </div>
+            </div>
+
+            <div class="provider-fields" data-provider="cloudflare" id="add-cloudflare-fields">
+                <p class="form-hint" style="margin-bottom: 10px;">Cloudflare is domain-based. Enable it here, then configure API token, zone, and DNS settings per domain under Domains.</p>
+                <p class="form-field-error" id="err_cf_enable" hidden style="margin-top:6px;"></p>
+            </div>
 
             <div class="dialog-footer">
                 <button class="btn btn--ghost" type="button" id="add-modal-cancel">Cancel</button>
-                <button class="btn btn--primary" type="submit" id="add-modal-submit" disabled>
-                    <i class="fa-solid fa-plus"></i> Add Integration
+                <button class="btn btn--primary" type="button" id="add-modal-next" hidden disabled>
+                    <i class="fa-solid fa-arrow-right"></i> Next
+                </button>
+                <button class="btn btn--primary" type="submit" id="add-modal-submit" hidden disabled>
+                    <i class="fa-solid fa-power-off"></i> Enable
+                </button>
+                <button class="btn btn--primary" type="button" id="add-modal-enable" hidden disabled>
+                    <i class="fa-solid fa-power-off"></i> Enable
+                </button>
+                <button class="btn btn--primary" type="button" id="add-modal-enable-domains" hidden disabled>
+                    <i class="fa-solid fa-power-off"></i> Enable &amp; Go to Domains
                 </button>
             </div>
         </form>
@@ -270,8 +292,13 @@ var VHM_INTEGRATIONS = <?= json_encode(array_map(static function (array $i): arr
 
 var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array {
     // Strip field defaults — only need field metadata for building forms
+    $fields = array_values(array_filter($p['fields'], static function (array $f): bool {
+        $name = (string) ($f['name'] ?? '');
+        return !in_array($name, ['identity', 'secret', 'bootstrap_key'], true);
+    }));
+
     return ['label' => $p['label'], 'category' => $p['category'], 'icon' => $p['icon'],
-            'fields' => array_map(static fn ($f) => ['name' => $f['name'], 'label' => $f['label'], 'type' => $f['type'], 'required' => $f['required'], 'placeholder' => $f['placeholder']], $p['fields'])];
+            'fields' => array_map(static fn ($f) => ['name' => $f['name'], 'label' => $f['label'], 'type' => $f['type'], 'required' => $f['required'], 'placeholder' => $f['placeholder']], $fields)];
 }, $allProviders), JSON_UNESCAPED_SLASHES) ?: '{}' ?>;
 
 (function () {
@@ -312,7 +339,56 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
         dialogEl.removeAttribute('open');
     }
 
-    // ── Provider dropdown filtering for add modal ──
+    function showFieldError(inputEl, msg) {
+        if (!inputEl) { return; }
+        inputEl.classList.add('is-error');
+        var fg = inputEl.closest('.form-group');
+        if (!fg) { return; }
+        var err = fg.querySelector('.form-field-error');
+        if (!err) {
+            err = document.createElement('span');
+            err.className = 'form-field-error';
+            fg.appendChild(err);
+        }
+        err.textContent = msg;
+        err.removeAttribute('hidden');
+    }
+
+    function clearFieldError(inputEl) {
+        if (!inputEl) { return; }
+        inputEl.classList.remove('is-error');
+        var fg = inputEl.closest('.form-group');
+        if (!fg) { return; }
+        var err = fg.querySelector('.form-field-error');
+        if (err) { err.setAttribute('hidden', ''); }
+    }
+
+    function showStepError(elId, msg) {
+        var el = document.getElementById(elId);
+        if (!el) { return; }
+        el.textContent = msg;
+        el.removeAttribute('hidden');
+    }
+
+    function clearAllFieldErrors(containerEl) {
+        if (!containerEl) { return; }
+        containerEl.querySelectorAll('.is-error').forEach(function (el) { el.classList.remove('is-error'); });
+        containerEl.querySelectorAll('.form-field-error').forEach(function (el) {
+            el.setAttribute('hidden', '');
+            el.textContent = '';
+        });
+    }
+
+    var addNext = document.getElementById('add-modal-next');
+    var addEnable = document.getElementById('add-modal-enable');
+    var addEnableDomains = document.getElementById('add-modal-enable-domains');
+    var npmStep1 = document.getElementById('add-npm-step-1');
+    var npmStep2 = document.getElementById('add-npm-step-2');
+    var npmBootstrapKey = document.getElementById('add_npm_bootstrap_key');
+    var npmRuntimeIdentity = document.getElementById('add_npm_runtime_identity');
+    var addName = document.getElementById('add_name');
+    var addFlowCategory = null;
+
     function filterAddProviders(category) {
         Array.from(addProvider.options).forEach(function (opt) {
             if (!opt.value) { opt.hidden = false; return; }
@@ -320,46 +396,313 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
         });
         addProvider.value = '';
         showProviderFields(null);
+    }
+
+    function resetAddFlowState() {
+        clearAllFieldErrors(addForm);
+
+        if (npmStep1) {
+            npmStep1.hidden = false;
+        }
+        if (npmStep2) {
+            npmStep2.hidden = true;
+        }
+        if (npmBootstrapKey) {
+            npmBootstrapKey.value = '';
+        }
+        if (npmRuntimeIdentity) {
+            npmRuntimeIdentity.value = '';
+        }
+
+        addSubmit.hidden = true;
         addSubmit.disabled = true;
+        addSubmit.innerHTML = '<i class="fa-solid fa-power-off"></i> Enable';
+
+        if (addNext) {
+            addNext.hidden = true;
+            addNext.disabled = true;
+            addNext.innerHTML = '<i class="fa-solid fa-arrow-right"></i> Next';
+        }
+
+        if (addEnable) {
+            addEnable.hidden = true;
+            addEnable.disabled = true;
+            addEnable.innerHTML = '<i class="fa-solid fa-power-off"></i> Enable';
+        }
+
+        if (addEnableDomains) {
+            addEnableDomains.hidden = true;
+            addEnableDomains.disabled = true;
+            addEnableDomains.innerHTML = '<i class="fa-solid fa-power-off"></i> Enable &amp; Go to Domains';
+        }
+    }
+
+    function isNonEmpty(value) {
+        return String(value || '').trim() !== '';
+    }
+
+    function updateAddActionState() {
+        var provider = addProvider.value;
+        var hasName = addName ? isNonEmpty(addName.value) : false;
+        var readyForProvider = isNonEmpty(provider);
+        var commonReady = hasName && readyForProvider;
+
+        if (!provider) {
+            if (addNext) {
+                addNext.disabled = true;
+            }
+            if (addSubmit) {
+                addSubmit.disabled = true;
+            }
+            if (addEnable) {
+                addEnable.disabled = true;
+            }
+            if (addEnableDomains) {
+                addEnableDomains.disabled = true;
+            }
+            return;
+        }
+
+        if (provider === 'npm') {
+            var inStep1 = npmStep1 && !npmStep1.hidden;
+            if (inStep1) {
+                var baseUrlInput = document.getElementById('add_npm_base_url');
+                var adminIdentityInput = document.getElementById('add_npm_admin_identity');
+                var adminSecretInput = document.getElementById('add_npm_admin_secret');
+                var step1Ready = commonReady
+                    && isNonEmpty(baseUrlInput ? baseUrlInput.value : '')
+                    && isNonEmpty(adminIdentityInput ? adminIdentityInput.value : '')
+                    && isNonEmpty(adminSecretInput ? adminSecretInput.value : '');
+                if (addNext) {
+                    addNext.disabled = !step1Ready;
+                }
+                if (addSubmit) {
+                    addSubmit.disabled = true;
+                }
+                return;
+            }
+
+            var forwardHostInput = document.getElementById('add_npm_forward_host');
+            var forwardPortInput = document.getElementById('add_npm_forward_port');
+            var step2Ready = commonReady
+                && isNonEmpty(npmBootstrapKey ? npmBootstrapKey.value : '')
+                && isNonEmpty(forwardHostInput ? forwardHostInput.value : '')
+                && isNonEmpty(forwardPortInput ? forwardPortInput.value : '');
+            if (addSubmit) {
+                addSubmit.disabled = !step2Ready;
+            }
+            return;
+        }
+
+        if (provider === 'cloudflare') {
+            var canEnableCloudflare = commonReady && addFlowCategory === 'dns';
+            if (addEnable) {
+                addEnable.disabled = !canEnableCloudflare;
+            }
+            if (addEnableDomains) {
+                addEnableDomains.disabled = !canEnableCloudflare;
+            }
+            return;
+        }
+
+        if (addSubmit) {
+            addSubmit.disabled = !commonReady;
+        }
     }
 
     function showProviderFields(providerKey) {
+        resetAddFlowState();
+
         document.querySelectorAll('#add-integration-form .provider-fields').forEach(function (el) {
             el.classList.toggle('is-active', el.dataset.provider === providerKey);
-            // disable/enable required inputs inside hidden sections
-            el.querySelectorAll('input, select').forEach(function (inp) {
-                if (el.dataset.provider !== providerKey) {
-                    inp.removeAttribute('required');
-                } else {
-                    var prov = VHM_PROVIDERS[providerKey];
-                    if (prov) {
-                        prov.fields.forEach(function (f) {
-                            if (f.name === inp.name.replace('settings[', '').replace(']', '') && f.required) {
-                                inp.setAttribute('required', '');
-                            }
-                        });
-                    }
-                }
-            });
         });
+
+        if (!providerKey) {
+            return;
+        }
+
+        if (providerKey === 'npm') {
+            if (addNext) {
+                addNext.hidden = false;
+            }
+            updateAddActionState();
+            return;
+        }
+
+        if (providerKey === 'cloudflare') {
+            // Cloudflare only makes sense in the DNS flow
+            if (addFlowCategory === 'dns') {
+                if (addEnable) { addEnable.hidden = false; }
+                if (addEnableDomains) { addEnableDomains.hidden = false; }
+            }
+            updateAddActionState();
+            return;
+        }
+
+        // Generic provider: show submit Enable
+        addSubmit.hidden = false;
+        updateAddActionState();
     }
 
     addProvider.addEventListener('change', function () {
         var key = addProvider.value;
         showProviderFields(key || null);
-        addSubmit.disabled = !key;
+        updateAddActionState();
     });
+
+    addForm.addEventListener('input', function (e) {
+        clearFieldError(e.target);
+        updateAddActionState();
+    });
+    addForm.addEventListener('change', updateAddActionState);
+
+    if (addNext) {
+        addNext.addEventListener('click', function () {
+            var provider = addProvider.value;
+            var csrfTokenInput = document.querySelector('#add-integration-form input[name=csrf_token]');
+            var csrfToken = csrfTokenInput ? csrfTokenInput.value : '';
+
+            if (provider === 'npm') {
+                var baseUrlInput = document.getElementById('add_npm_base_url');
+                var adminIdentityInput = document.getElementById('add_npm_admin_identity');
+                var adminSecretInput = document.getElementById('add_npm_admin_secret');
+                var baseUrl = baseUrlInput ? baseUrlInput.value.trim() : '';
+                var adminIdentity = adminIdentityInput ? adminIdentityInput.value.trim() : '';
+                var adminSecret = adminSecretInput ? adminSecretInput.value : '';
+
+                var hasError = false;
+                if (!baseUrl) { showFieldError(baseUrlInput, 'Base URL is required.'); hasError = true; }
+                if (!adminIdentity) { showFieldError(adminIdentityInput, 'Admin email is required.'); hasError = true; }
+                if (!adminSecret) { showFieldError(adminSecretInput, 'Admin password is required.'); hasError = true; }
+                if (hasError) { return; }
+
+                addNext.disabled = true;
+                addNext.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Creating';
+
+                var npmBody = new URLSearchParams();
+                npmBody.set('csrf_token', csrfToken);
+                npmBody.set('base_url', baseUrl);
+                npmBody.set('admin_identity', adminIdentity);
+                npmBody.set('admin_secret', adminSecret);
+
+                fetch('/?route=settings-integrations-npm-bootstrap', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: npmBody.toString(),
+                })
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        if (!data.ok) {
+                            throw new Error(data.message || 'Unable to provision NPM runtime account.');
+                        }
+
+                        if (npmBootstrapKey) {
+                            npmBootstrapKey.value = String(data.bootstrap_key || '');
+                        }
+                        if (npmRuntimeIdentity) {
+                            npmRuntimeIdentity.value = String(data.runtime_identity || '');
+                        }
+
+                        if (npmStep1) {
+                            npmStep1.hidden = true;
+                        }
+                        if (npmStep2) {
+                            npmStep2.hidden = false;
+                        }
+
+                        addNext.hidden = true;
+                        addSubmit.hidden = false;
+                        addSubmit.disabled = true;
+                        updateAddActionState();
+                    })
+                    .catch(function (err) {
+                        showStepError('err_npm_step1', err.message || 'Unable to provision NPM runtime account.');
+                        updateAddActionState();
+                        addNext.innerHTML = '<i class="fa-solid fa-arrow-right"></i> Next';
+                    });
+
+                return;
+            }
+        });
+    }
+
+    function enableCloudflare(andGoToDomains) {
+        var csrfTokenInput = document.querySelector('#add-integration-form input[name=csrf_token]');
+        var csrfToken = csrfTokenInput ? csrfTokenInput.value : '';
+        var name = addName ? addName.value.trim() : '';
+
+        if (!name) {
+            showFieldError(addName, 'A custom name is required.');
+            return;
+        }
+
+        if (addEnable) {
+            addEnable.disabled = true;
+            addEnable.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Enabling';
+        }
+        if (addEnableDomains) {
+            addEnableDomains.disabled = true;
+            addEnableDomains.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Enabling';
+        }
+
+        var cfBody = new URLSearchParams();
+        cfBody.set('csrf_token', csrfToken);
+        cfBody.set('name', name);
+
+        fetch('/?route=settings-integrations-enable-cloudflare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: cfBody.toString(),
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data.ok) {
+                    throw new Error(data.message || 'Unable to enable Cloudflare integration.');
+                }
+
+                if (andGoToDomains) {
+                    window.location.href = '/?route=domains';
+                    return;
+                }
+
+                closeDialog(addModal);
+                window.location.reload();
+            })
+            .catch(function (err) {
+                showStepError('err_cf_enable', err.message || 'Unable to enable Cloudflare integration.');
+                if (addEnable) {
+                    addEnable.innerHTML = '<i class="fa-solid fa-power-off"></i> Enable';
+                }
+                if (addEnableDomains) {
+                    addEnableDomains.innerHTML = '<i class="fa-solid fa-power-off"></i> Enable &amp; Go to Domains';
+                }
+                updateAddActionState();
+            });
+    }
+
+    if (addEnable) {
+        addEnable.addEventListener('click', function () {
+            enableCloudflare(false);
+        });
+    }
+
+    if (addEnableDomains) {
+        addEnableDomains.addEventListener('click', function () {
+            enableCloudflare(true);
+        });
+    }
 
     // ── Open Add modal ──
     document.addEventListener('click', function (event) {
         var addBtn = event.target.closest('[data-open-add-modal]');
         if (addBtn) {
             var category = addBtn.getAttribute('data-open-add-modal');
-            filterAddProviders(category);
+            addFlowCategory = category || null;
             addForm.reset();
+            filterAddProviders(category);
             var label = category === 'proxy' ? 'Reverse Proxy' : 'DNS';
-            addSubtitle.textContent = 'Select a ' + label + ' provider to configure.';
-            addSubmit.disabled = true;
+            addSubtitle.textContent = 'Choose a ' + label + ' provider.';
+            updateAddActionState();
             openDialog(addModal);
             return;
         }
@@ -466,9 +809,23 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
     });
 
     // ── Close Add modal ──
-    document.getElementById('add-modal-close').addEventListener('click', function () { closeDialog(addModal); });
-    document.getElementById('add-modal-cancel').addEventListener('click', function () { closeDialog(addModal); });
-    addModal.addEventListener('click', function (e) { if (e.target === addModal) closeDialog(addModal); });
+    document.getElementById('add-modal-close').addEventListener('click', function () {
+        addFlowCategory = null;
+        resetAddFlowState();
+        closeDialog(addModal);
+    });
+    document.getElementById('add-modal-cancel').addEventListener('click', function () {
+        addFlowCategory = null;
+        resetAddFlowState();
+        closeDialog(addModal);
+    });
+    addModal.addEventListener('click', function (e) {
+        if (e.target === addModal) {
+            addFlowCategory = null;
+            resetAddFlowState();
+            closeDialog(addModal);
+        }
+    });
 
     // ── Close Edit modal ──
     document.getElementById('edit-modal-close').addEventListener('click', function () { closeDialog(editModal); });

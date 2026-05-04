@@ -341,7 +341,7 @@ final class SetupController extends BaseController
             }
 
             if ($npmIdentity === '' || $npmSecret === '') {
-                Session::setFlash('error', 'NPM admin email and password are required.');
+                Session::setFlash('error', 'NPM admin email and password are required one time to provision the VHM account.');
                 $this->redirect('setup-integration');
             }
 
@@ -367,11 +367,19 @@ final class SetupController extends BaseController
                 $this->redirect('setup-integration');
             }
 
+            try {
+                $serviceAccount = $this->provisionNpmServiceAccount($npmBaseUrl, $npmIdentity, $npmSecret);
+            } catch (RuntimeException $e) {
+                $_SESSION['setup_external_npm_test_error'] = $e->getMessage();
+                Session::setFlash('error', 'Connected to NPM but failed to provision the VHM account.');
+                $this->redirect('setup-integration');
+            }
+
             unset($_SESSION['setup_external_npm_test_error']);
 
             $_SESSION['setup_pending_npm_base_url'] = $npmBaseUrl;
-            $_SESSION['setup_pending_npm_identity'] = $npmIdentity;
-            $_SESSION['setup_pending_npm_secret'] = $npmSecret;
+            $_SESSION['setup_pending_npm_identity'] = $serviceAccount['identity'];
+            $_SESSION['setup_pending_npm_secret'] = $serviceAccount['secret'];
             $_SESSION['setup_pending_npm_forward_host'] = $npmForwardHost;
             $_SESSION['setup_pending_npm_forward_port'] = (string) $npmForwardPort;
         }
@@ -457,10 +465,17 @@ final class SetupController extends BaseController
                 $this->redirect('setup-confirm');
             }
 
+            try {
+                $serviceAccount = $this->provisionNpmServiceAccount('http://npm:81', $builtinIdentity, $builtinSecret);
+            } catch (RuntimeException $e) {
+                Session::setFlash('error', 'Built-in NPM connected, but VHM account provisioning failed: ' . $e->getMessage());
+                $this->redirect('setup-confirm');
+            }
+
             $settings['NPM_ENABLED'] = 'true';
             $settings['NPM_BASE_URL'] = 'http://npm:81';
-            $settings['NPM_IDENTITY'] = $builtinIdentity;
-            $settings['NPM_SECRET'] = $builtinSecret;
+            $settings['NPM_IDENTITY'] = $serviceAccount['identity'];
+            $settings['NPM_SECRET'] = $serviceAccount['secret'];
             $settings['NPM_FORWARD_HOST'] = 'vhost-manager';
             $settings['NPM_FORWARD_PORT'] = '80';
         } elseif ($proxyMode === 'external_npm') {
@@ -660,5 +675,249 @@ final class SetupController extends BaseController
         }
 
         return in_array((int) ($result['status'] ?? 0), [200, 201], true);
+    }
+
+    /**
+     * @return array{identity:string,secret:string}
+     */
+    private function provisionNpmServiceAccount(string $baseUrl, string $adminIdentity, string $adminSecret): array
+    {
+        $adminToken = $this->resolveNpmAdminToken($baseUrl, $adminIdentity, $adminSecret);
+
+        $serviceIdentityBase = $this->buildNpmServiceIdentity($adminIdentity);
+        $serviceIdentity = $serviceIdentityBase;
+        $headers = ["Authorization: Bearer {$adminToken}"];
+
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $serviceSecret = bin2hex(random_bytes(32));
+            $createUser = $this->createNpmUserWithFallback(
+                rtrim($baseUrl, '/') . '/api/users',
+                $headers,
+                $serviceIdentity,
+                $serviceSecret,
+                false
+            );
+
+            if (!in_array((int) ($createUser['status'] ?? 0), [200, 201], true)) {
+                if ($this->isNpmDuplicateUserError($createUser)) {
+                    $serviceIdentity = $this->withNpmIdentitySuffix($serviceIdentityBase);
+                    continue;
+                }
+
+                $body = json_encode($createUser['body'] ?? [], JSON_UNESCAPED_SLASHES);
+                throw new RuntimeException('NPM service account could not be created: ' . $body);
+            }
+
+            if ($this->requestNpmToken($baseUrl, $serviceIdentity, $serviceSecret) === null) {
+                throw new RuntimeException('NPM service account was created but token verification failed.');
+            }
+
+            return [
+                'identity' => $serviceIdentity,
+                'secret' => $serviceSecret,
+            ];
+        }
+
+        throw new RuntimeException('NPM service account creation failed because generated runtime identities already exist.');
+    }
+
+    private function resolveNpmAdminToken(string $baseUrl, string $adminIdentity, string $adminSecret): string
+    {
+        try {
+            $result = $this->httpClient->post(rtrim($baseUrl, '/') . '/api/tokens', [
+                'identity' => $adminIdentity,
+                'secret' => $adminSecret,
+            ]);
+        } catch (RuntimeException $e) {
+            throw new RuntimeException('NPM admin authentication request failed: ' . $e->getMessage());
+        }
+
+        if ((int) ($result['status'] ?? 0) === 200 && is_array($result['body'] ?? null)) {
+            $token = trim((string) ($result['body']['token'] ?? ''));
+            if ($token !== '') {
+                return $token;
+            }
+        }
+
+        // Allow pasting an existing bearer token into the secret field.
+        if (substr_count($adminSecret, '.') === 2) {
+            try {
+                $meResult = $this->httpClient->get(rtrim($baseUrl, '/') . '/api/users/me', [
+                    'Authorization: Bearer ' . $adminSecret,
+                ]);
+
+                if ((int) ($meResult['status'] ?? 0) === 200) {
+                    return $adminSecret;
+                }
+            } catch (RuntimeException) {
+                // Fall through to detailed auth error.
+            }
+        }
+
+        $status = (int) ($result['status'] ?? 0);
+        $detail = $this->extractNpmErrorMessage($result['body'] ?? null);
+        if ($detail !== '') {
+            throw new RuntimeException('NPM admin authentication failed while provisioning service account: ' . $detail);
+        }
+
+        throw new RuntimeException('NPM admin authentication failed while provisioning service account (HTTP ' . $status . ').');
+    }
+
+    private function extractNpmErrorMessage(mixed $body): string
+    {
+        if (is_array($body)) {
+            $nested = trim((string) (($body['error']['message'] ?? '') ?: ''));
+            if ($nested !== '') {
+                return $nested;
+            }
+
+            $top = trim((string) ($body['message'] ?? ''));
+            if ($top !== '') {
+                return $top;
+            }
+
+            $encoded = json_encode($body, JSON_UNESCAPED_SLASHES);
+            return is_string($encoded) ? $encoded : '';
+        }
+
+        if (is_string($body)) {
+            return trim($body);
+        }
+
+        return '';
+    }
+
+    /**
+     * @param list<string> $headers
+     * @return array{status:int,body:mixed}
+     */
+    private function createNpmUserWithFallback(
+        string $usersUrl,
+        array $headers,
+        string $identity,
+        string $secret,
+        bool $isAdmin
+    ): array {
+        $payloads = [
+            [
+                'name' => 'Vhost Manager',
+                'nickname' => 'VHM',
+                'email' => $identity,
+                'roles' => [],
+                'is_disabled' => false,
+                'auth' => [
+                    'type' => 'password',
+                    'secret' => $secret,
+                ],
+            ],
+            [
+                'name' => 'Vhost Manager',
+                'nickname' => 'VHM',
+                'email' => $identity,
+                'auth' => [
+                    'type' => 'password',
+                    'secret' => $secret,
+                ],
+            ],
+            [
+                'email' => $identity,
+                'password' => $secret,
+                'is_admin' => $isAdmin,
+            ],
+            [
+                'name' => 'Vhost Manager',
+                'nickname' => 'VHM',
+                'email' => $identity,
+                'is_admin' => $isAdmin,
+                'auth' => [
+                    'type' => 'password',
+                    'secret' => $secret,
+                ],
+            ],
+        ];
+
+        $lastResult = ['status' => 0, 'body' => ['message' => 'No request attempted']];
+
+        foreach ($payloads as $payload) {
+            $result = $this->httpClient->post($usersUrl, $payload, $headers);
+            $lastResult = [
+                'status' => (int) ($result['status'] ?? 0),
+                'body' => $result['body'] ?? [],
+            ];
+
+            if (in_array((int) ($lastResult['status'] ?? 0), [200, 201], true)) {
+                return $lastResult;
+            }
+
+            $status = (int) ($lastResult['status'] ?? 0);
+            if ($status >= 400 && $status < 500 && !$this->isNpmSchemaValidationError($lastResult)) {
+                return $lastResult;
+            }
+            if ($status >= 500) {
+                return $lastResult;
+            }
+        }
+
+        return $lastResult;
+    }
+
+    /**
+     * @param array{status:int,body:mixed} $result
+     */
+    private function isNpmDuplicateUserError(array $result): bool
+    {
+        $body = json_encode($result['body'] ?? [], JSON_UNESCAPED_SLASHES);
+        if (!is_string($body) || $body === '') {
+            return false;
+        }
+
+        $text = strtolower($body);
+
+        return (str_contains($text, 'already') || str_contains($text, 'exists'))
+            && (str_contains($text, 'email') || str_contains($text, 'user'));
+    }
+
+    /**
+     * @param array{status:int,body:mixed} $result
+     */
+    private function isNpmSchemaValidationError(array $result): bool
+    {
+        $body = json_encode($result['body'] ?? [], JSON_UNESCAPED_SLASHES);
+        if (!is_string($body) || $body === '') {
+            return false;
+        }
+
+        $text = strtolower($body);
+
+        return str_contains($text, 'additional properties')
+            || str_contains($text, 'required property')
+            || str_contains($text, 'must have required property')
+            || str_contains($text, 'must not have additional properties');
+    }
+
+    private function withNpmIdentitySuffix(string $identity): string
+    {
+        $atPos = strpos($identity, '@');
+        if ($atPos === false) {
+            return $identity . '-' . substr(bin2hex(random_bytes(2)), 0, 4);
+        }
+
+        $local = substr($identity, 0, $atPos);
+        $domain = substr($identity, $atPos + 1);
+
+        return $local . '-' . substr(bin2hex(random_bytes(2)), 0, 4) . '@' . $domain;
+    }
+
+    private function buildNpmServiceIdentity(string $email): string
+    {
+        $localPart = strtolower(trim((string) strtok($email, '@')));
+        $localPart = preg_replace('/[^a-z0-9._-]/', '', $localPart);
+        $localPart = is_string($localPart) ? trim($localPart, '._-') : '';
+
+        if ($localPart === '') {
+            $localPart = 'vhm';
+        }
+
+        return $localPart . '@vhost-manager.npm';
     }
 }

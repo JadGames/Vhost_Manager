@@ -204,7 +204,10 @@
                     <div class="form-row">
                         <div class="form-group" style="margin-bottom: 14px;">
                             <label class="form-label" for="add_npm_forward_host">Forward Host <span style="color:var(--danger)"> *</span></label>
-                            <input class="form-input" id="add_npm_forward_host" type="text" name="settings[forward_host]" placeholder="127.0.0.1" value="127.0.0.1">
+                            <div class="app-url-input-row">
+                                <input class="form-input" id="add_npm_forward_host" type="text" name="settings[forward_host]" placeholder="127.0.0.1" value="127.0.0.1">
+                                <button class="btn btn--ghost btn--sm" type="button" id="add_npm_get_ip">Get IP</button>
+                            </div>
                             <span class="form-field-error" id="err_npm_forward_host" hidden></span>
                         </div>
                         <div class="form-group" style="margin-bottom: 14px;">
@@ -372,9 +375,18 @@
 <!-- All integration data for JS -->
 <script nonce="<?= e((string) ($cspNonce ?? '')) ?>">
 var VHM_INTEGRATIONS = <?= json_encode(array_map(static function (array $i): array {
-    // Don't expose secret values to JS
+    // Keep non-secret settings so edit modal can preload current values.
     $safe = $i;
-    $safe['settings'] = array_map(static function ($v) { return ''; }, $i['settings'] ?? []);
+    $safeSettings = [];
+    foreach (($i['settings'] ?? []) as $key => $value) {
+        $name = strtolower((string) $key);
+        $isSensitive = str_contains($name, 'secret')
+            || str_contains($name, 'password')
+            || str_contains($name, 'token')
+            || $name === 'bootstrap_key';
+        $safeSettings[(string) $key] = $isSensitive ? '' : (string) $value;
+    }
+    $safe['settings'] = $safeSettings;
     return $safe;
 }, $integrations ?? []), JSON_UNESCAPED_SLASHES) ?: '[]' ?>;
 
@@ -495,6 +507,29 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
         return tokenInput ? tokenInput.value : '';
     }
 
+    function requestServerIp() {
+        var body = new URLSearchParams();
+        body.set('csrf_token', csrfTokenValue());
+
+        return fetch('/?route=settings-integrations-server-ip', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        })
+            .then(function (r) {
+                return r.json().catch(function () {
+                    return { ok: false, message: 'Invalid response from server.' };
+                });
+            })
+            .then(function (data) {
+                if (!data || !data.ok || !data.ip) {
+                    throw new Error((data && data.message) ? data.message : 'Unable to detect server IP.');
+                }
+
+                return String(data.ip);
+            });
+    }
+
     function testCloudflareDomain(domain) {
         var body = new URLSearchParams();
         body.set('csrf_token', csrfTokenValue());
@@ -611,6 +646,7 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
     var npmBootstrapKey = document.getElementById('add_npm_bootstrap_key');
     var npmRuntimeIdentity = document.getElementById('add_npm_runtime_identity');
     var addName = document.getElementById('add_name');
+    var addNpmGetIp = document.getElementById('add_npm_get_ip');
     var addFlowCategory = null;
 
     function filterAddProviders(category) {
@@ -937,6 +973,30 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
         });
     }
 
+    if (addNpmGetIp) {
+        addNpmGetIp.addEventListener('click', function () {
+            var target = document.getElementById('add_npm_forward_host');
+            if (!target) {
+                return;
+            }
+
+            addNpmGetIp.disabled = true;
+            addNpmGetIp.textContent = 'Loading';
+            requestServerIp()
+                .then(function (ip) {
+                    target.value = ip;
+                    target.dispatchEvent(new Event('input', { bubbles: true }));
+                })
+                .catch(function (err) {
+                    showStepError('err_npm_step2', err.message || 'Unable to detect server IP.');
+                })
+                .finally(function () {
+                    addNpmGetIp.disabled = false;
+                    addNpmGetIp.textContent = 'Get IP';
+                });
+        });
+    }
+
     // ── Open Add modal ──
     document.addEventListener('click', function (event) {
         var addBtn = event.target.closest('[data-open-add-modal]');
@@ -1042,7 +1102,24 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
                         if (field.required) {
                             fieldInput.required = true;
                         }
-                        fg.appendChild(fieldInput);
+
+                        if (field.name === 'forward_host') {
+                            var row = document.createElement('div');
+                            row.className = 'app-url-input-row';
+                            row.appendChild(fieldInput);
+
+                            var ipBtn = document.createElement('button');
+                            ipBtn.type = 'button';
+                            ipBtn.className = 'btn btn--ghost btn--sm';
+                            ipBtn.setAttribute('data-edit-get-ip', '1');
+                            ipBtn.setAttribute('data-target-input', fieldInput.id);
+                            ipBtn.textContent = 'Get IP';
+                            row.appendChild(ipBtn);
+
+                            fg.appendChild(row);
+                        } else {
+                            fg.appendChild(fieldInput);
+                        }
                     }
 
                     container.appendChild(fg);
@@ -1213,6 +1290,34 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
                 showTestResult(false, 'Connection test failed.');
             });
         });
+    });
+
+    document.addEventListener('click', function (event) {
+        var ipBtn = event.target.closest('[data-edit-get-ip]');
+        if (!ipBtn) {
+            return;
+        }
+
+        var targetId = ipBtn.getAttribute('data-target-input') || '';
+        var targetInput = targetId ? document.getElementById(targetId) : null;
+        if (!targetInput) {
+            return;
+        }
+
+        ipBtn.disabled = true;
+        ipBtn.textContent = 'Loading';
+        requestServerIp()
+            .then(function (ip) {
+                targetInput.value = ip;
+                targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+            })
+            .catch(function (err) {
+                showTestResult(false, err.message || 'Unable to detect server IP.');
+            })
+            .finally(function () {
+                ipBtn.disabled = false;
+                ipBtn.textContent = 'Get IP';
+            });
     });
 }());
 </script>

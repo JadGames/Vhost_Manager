@@ -357,6 +357,16 @@ try {
             exit;
             break;
 
+        case 'settings-integrations-server-ip':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $settingsController->integrationsServerIpAction();
+                break;
+            }
+            header('Location: /?route=settings-integrations');
+            exit;
+            break;
+
         case 'settings-integrations-npm-bootstrap':
             Session::requireAuth();
             if ($method === 'POST') {

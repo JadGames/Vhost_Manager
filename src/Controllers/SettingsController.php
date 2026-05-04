@@ -110,6 +110,9 @@ final class SettingsController extends BaseController
                     if ($name === '') {
                         throw new RuntimeException('Integration name is required.');
                     }
+                    if ($this->isIntegrationNameInUse($name, null)) {
+                        throw new RuntimeException('Integration name must be unique.');
+                    }
 
                     $this->settingsStore->integrationUpsert([
                         'id' => str_replace('.', '', uniqid($providerKey . '_', true)),
@@ -132,6 +135,9 @@ final class SettingsController extends BaseController
                     }
                     if ($name === '') {
                         throw new RuntimeException('Integration name is required.');
+                    }
+                    if ($this->isIntegrationNameInUse($name, $id)) {
+                        throw new RuntimeException('Integration name must be unique.');
                     }
 
                     $existing = $this->settingsStore->integrationGet($id);
@@ -279,6 +285,26 @@ final class SettingsController extends BaseController
             http_response_code(422);
             echo json_encode(['ok' => false, 'message' => $e->getMessage()]);
         }
+    }
+
+    public function integrationsServerIpAction(): void
+    {
+        header('Content-Type: application/json');
+
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        $ip = $this->detectServerIp();
+        if ($ip === null) {
+            http_response_code(422);
+            echo json_encode(['ok' => false, 'message' => 'Unable to detect a valid server IPv4 address.']);
+            return;
+        }
+
+        echo json_encode(['ok' => true, 'ip' => $ip]);
     }
 
     public function integrationsNpmBootstrapAction(): void
@@ -882,12 +908,21 @@ final class SettingsController extends BaseController
                 throw new RuntimeException('NPM base URL is not configured.');
             }
 
-            $result = (new HttpClient($verifySsl))->get($baseUrl . '/api');
-            $body = $result['body'] ?? null;
-            $status = is_array($body) ? ($body['status'] ?? '') : '';
+            $identity = trim((string) ($settings['identity'] ?? ''));
+            $secret = trim((string) ($settings['secret'] ?? ''));
+            if ($identity === '' || $secret === '') {
+                throw new RuntimeException('NPM runtime credentials are missing. Re-run provisioning from the integration form.');
+            }
 
-            if ($status !== 'OK') {
-                throw new RuntimeException('NPM API did not return OK status.');
+            $tokenResult = (new HttpClient($verifySsl))->post($baseUrl . '/api/tokens', [
+                'identity' => $identity,
+                'secret' => $secret,
+            ]);
+
+            $tokenBody = $tokenResult['body'] ?? null;
+            $token = is_array($tokenBody) ? trim((string) ($tokenBody['token'] ?? '')) : '';
+            if ((int) ($tokenResult['status'] ?? 0) !== 200 || $token === '') {
+                throw new RuntimeException('NPM authentication test failed. Verify runtime credentials and base URL.');
             }
 
             return [
@@ -1293,6 +1328,45 @@ final class SettingsController extends BaseController
     private function postBool(string $key): bool
     {
         return isset($_POST[$key]) && (string) $_POST[$key] === '1';
+    }
+
+    private function isIntegrationNameInUse(string $name, ?string $ignoreId): bool
+    {
+        foreach ($this->integrationsFromStore() as $integration) {
+            $candidateId = (string) ($integration['id'] ?? '');
+            if ($ignoreId !== null && $candidateId === $ignoreId) {
+                continue;
+            }
+
+            if (strcasecmp(trim((string) ($integration['name'] ?? '')), trim($name)) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function detectServerIp(): ?string
+    {
+        $candidates = [];
+
+        $serverAddr = trim((string) ($_SERVER['SERVER_ADDR'] ?? ''));
+        if ($serverAddr !== '') {
+            $candidates[] = $serverAddr;
+        }
+
+        $resolvedHost = @gethostbyname((string) gethostname());
+        if (is_string($resolvedHost) && $resolvedHost !== '') {
+            $candidates[] = $resolvedHost;
+        }
+
+        foreach ($candidates as $candidate) {
+            if (filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 
     /**

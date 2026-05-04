@@ -9,8 +9,6 @@ use App\Security\Csrf;
 use App\Services\ApacheModulesService;
 use App\Services\HttpClient;
 use App\Services\IntegrationRegistry;
-use App\Services\Logger;
-use App\Services\NpmService;
 use App\Security\DomainValidator;
 use App\Services\SettingsStore;
 use RuntimeException;
@@ -20,11 +18,11 @@ final class SettingsController extends BaseController
     public function __construct(
         \App\Core\Config $config,
         private readonly Csrf $csrf,
-        private readonly SettingsStore $settingsStore,
+        SettingsStore $settingsStore,
         private readonly ApacheModulesService $apacheModules,
         private readonly HttpClient $httpClient
     ) {
-        parent::__construct($config);
+        parent::__construct($config, $settingsStore);
     }
 
     public function show(): void
@@ -55,8 +53,6 @@ final class SettingsController extends BaseController
             'domainOptions' => $this->domainOptionsFromStore(),
             'adminUser' => (string) $this->config->get('ADMIN_USER', 'admin@example.com'),
             'additionalUsers' => $additionalUsers,
-            'cfEnabled' => $this->config->getBool('CF_ENABLED', false),
-            'npmEnabled' => $this->config->getBool('NPM_ENABLED', false),
             'usersCount' => count($additionalUsers),
             'cfDomainMappingsCount' => count($this->cloudflareDomainsFromStore()),
             'apacheModulesCount' => count($apacheModules),
@@ -69,6 +65,14 @@ final class SettingsController extends BaseController
     public function showIntegrations(): void
     {
         $integrations = $this->integrationsFromStore();
+        $cloudflareEnabledDomains = array_values(array_map(
+            static fn (array $mapping): string => (string) ($mapping['domain'] ?? ''),
+            $this->cloudflareDomainsFromStore()
+        ));
+        $cloudflareEnabledDomains = array_values(array_filter(
+            $cloudflareEnabledDomains,
+            static fn (string $domain): bool => $domain !== ''
+        ));
 
         $this->render('settings/integrations.php', [
             'csrfToken' => $this->csrf->token(),
@@ -76,6 +80,7 @@ final class SettingsController extends BaseController
             'integrations' => $integrations,
             'proxyIntegrations' => IntegrationRegistry::filterByCategory($integrations, 'proxy'),
             'dnsIntegrations' => IntegrationRegistry::filterByCategory($integrations, 'dns'),
+            'cloudflareEnabledDomains' => $cloudflareEnabledDomains,
         ]);
     }
 
@@ -86,7 +91,6 @@ final class SettingsController extends BaseController
             $this->redirect('settings-integrations');
         }
 
-        $integrations = $this->integrationsFromStore();
         $providers = IntegrationRegistry::providers();
         $intent = trim((string) ($_POST['intent'] ?? ''));
 
@@ -107,7 +111,7 @@ final class SettingsController extends BaseController
                         throw new RuntimeException('Integration name is required.');
                     }
 
-                    $integrations[] = [
+                    $this->settingsStore->integrationUpsert([
                         'id' => str_replace('.', '', uniqid($providerKey . '_', true)),
                         'name' => $name,
                         'provider' => $providerKey,
@@ -116,7 +120,7 @@ final class SettingsController extends BaseController
                             $providerKey,
                             is_array($_POST['settings'] ?? null) ? $_POST['settings'] : []
                         ),
-                    ];
+                    ]);
                     Session::setFlash('success', 'Integration added.');
                     break;
 
@@ -130,25 +134,17 @@ final class SettingsController extends BaseController
                         throw new RuntimeException('Integration name is required.');
                     }
 
-                    $index = null;
-                    foreach ($integrations as $candidateIndex => $integration) {
-                        if ((string) ($integration['id'] ?? '') === $id) {
-                            $index = $candidateIndex;
-                            break;
-                        }
-                    }
-
-                    if ($index === null) {
+                    $existing = $this->settingsStore->integrationGet($id);
+                    if ($existing === null) {
                         throw new RuntimeException('Integration not found.');
                     }
 
-                    $existing = $integrations[$index];
                     $providerKey = (string) ($existing['provider'] ?? '');
                     if (!isset($providers[$providerKey])) {
                         throw new RuntimeException('Invalid integration provider.');
                     }
 
-                    $integrations[$index] = [
+                    $this->settingsStore->integrationUpsert([
                         'id' => $id,
                         'name' => $name,
                         'provider' => $providerKey,
@@ -158,7 +154,7 @@ final class SettingsController extends BaseController
                             is_array($_POST['settings'] ?? null) ? $_POST['settings'] : [],
                             is_array($existing['settings'] ?? null) ? $existing['settings'] : []
                         ),
-                    ];
+                    ]);
                     Session::setFlash('success', 'Integration updated.');
                     break;
 
@@ -168,16 +164,11 @@ final class SettingsController extends BaseController
                         throw new RuntimeException('Integration ID is required.');
                     }
 
-                    $remaining = array_values(array_filter(
-                        $integrations,
-                        static fn (array $integration): bool => (string) ($integration['id'] ?? '') !== $id
-                    ));
-
-                    if (count($remaining) === count($integrations)) {
+                    if ($this->settingsStore->integrationGet($id) === null) {
                         throw new RuntimeException('Integration not found.');
                     }
 
-                    $integrations = $remaining;
+                    $this->settingsStore->integrationDelete($id);
                     Session::setFlash('success', 'Integration removed.');
                     break;
 
@@ -185,17 +176,7 @@ final class SettingsController extends BaseController
                     throw new RuntimeException('Invalid integrations action.');
             }
 
-            usort($integrations, static function (array $a, array $b): int {
-                $categoryCompare = strcmp((string) ($a['category'] ?? ''), (string) ($b['category'] ?? ''));
-                if ($categoryCompare !== 0) {
-                    return $categoryCompare;
-                }
-
-                return strcasecmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
-            });
-
-            $this->persistIntegrations($integrations);
-            $this->syncLegacyIntegrationSettings($integrations);
+            $this->syncLegacyIntegrationSettings($this->integrationsFromStore());
         } catch (RuntimeException $e) {
             Session::setFlash('error', $e->getMessage());
         }
@@ -220,8 +201,8 @@ final class SettingsController extends BaseController
             }
 
             try {
-                $this->testIntegration($integration);
-                echo json_encode(['ok' => true]);
+                $result = $this->testIntegration($integration);
+                echo json_encode(array_merge(['ok' => true], $result));
             } catch (RuntimeException $e) {
                 http_response_code(422);
                 echo json_encode(['ok' => false, 'message' => $e->getMessage()]);
@@ -232,6 +213,72 @@ final class SettingsController extends BaseController
 
         http_response_code(404);
         echo json_encode(['ok' => false, 'message' => 'Integration not found.']);
+    }
+
+    public function integrationsCloudflareDomainTestAction(): void
+    {
+        header('Content-Type: application/json');
+
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        $domain = strtolower(trim((string) ($_POST['domain'] ?? '')));
+        if ($domain === '') {
+            http_response_code(422);
+            echo json_encode(['ok' => false, 'message' => 'Domain is required.']);
+            return;
+        }
+
+        $mapping = null;
+        foreach ($this->cloudflareDomainsFromStore() as $row) {
+            if (strtolower(trim((string) ($row['domain'] ?? ''))) !== $domain) {
+                continue;
+            }
+
+            $mapping = $row;
+            break;
+        }
+
+        if ($mapping === null) {
+            http_response_code(404);
+            echo json_encode(['ok' => false, 'message' => 'Cloudflare mapping not found for domain.']);
+            return;
+        }
+
+        $zoneId = trim((string) ($mapping['zone_id'] ?? ''));
+        $token = trim((string) ($mapping['api_token'] ?? ''));
+        if ($zoneId === '' || $token === '') {
+            http_response_code(422);
+            echo json_encode(['ok' => false, 'message' => 'Cloudflare zone/token is missing for this domain.']);
+            return;
+        }
+
+        try {
+            $result = (new HttpClient($this->config->getBool('CURL_VERIFY_SSL', true)))->get(
+                'https://api.cloudflare.com/client/v4/zones/' . rawurlencode($zoneId),
+                ['Authorization: Bearer ' . $token]
+            );
+
+            $ok = $result['status'] === 200 && !empty($result['body']['success']);
+            if (!$ok) {
+                $message = 'Cloudflare test failed.';
+                if (is_array($result['body'] ?? null) && !empty($result['body']['errors'][0]['message'])) {
+                    $message = (string) $result['body']['errors'][0]['message'];
+                }
+
+                http_response_code(422);
+                echo json_encode(['ok' => false, 'message' => $message]);
+                return;
+            }
+
+            echo json_encode(['ok' => true, 'message' => 'Cloudflare credentials are valid for this domain.']);
+        } catch (RuntimeException $e) {
+            http_response_code(422);
+            echo json_encode(['ok' => false, 'message' => $e->getMessage()]);
+        }
     }
 
     public function integrationsNpmBootstrapAction(): void
@@ -286,31 +333,23 @@ final class SettingsController extends BaseController
                 $name = 'Cloudflare';
             }
 
-            $integrations = $this->integrationsFromStore();
-            $existingIndex = null;
-            foreach ($integrations as $idx => $row) {
+            $existingId = 'cloudflare_enabled';
+            foreach ($this->settingsStore->integrationGetAll() as $row) {
                 if (($row['provider'] ?? '') === 'cloudflare') {
-                    $existingIndex = $idx;
+                    $existingId = (string) $row['id'];
                     break;
                 }
             }
 
             $entry = [
-                'id' => $existingIndex !== null ? (string) ($integrations[$existingIndex]['id'] ?? 'cloudflare_enabled') : 'cloudflare_enabled',
+                'id' => $existingId,
                 'name' => $name,
                 'provider' => 'cloudflare',
                 'category' => 'dns',
                 'settings' => [],
             ];
 
-            if ($existingIndex !== null) {
-                $integrations[$existingIndex] = $entry;
-            } else {
-                $integrations[] = $entry;
-            }
-
-            $this->persistIntegrations($integrations);
-            $this->settingsStore->setMany(['CF_ENABLED' => 'true']);
+            $this->settingsStore->integrationUpsert($entry);
 
             echo json_encode(['ok' => true]);
         } catch (RuntimeException $e) {
@@ -632,6 +671,10 @@ final class SettingsController extends BaseController
             $this->settingsStore->setMany([
                 'ADMIN_PASSWORD_HASH' => $hash,
             ]);
+            $adminEmail = strtolower(trim((string) $this->config->get('ADMIN_USER', '')));
+            if ($adminEmail !== '') {
+                $this->settingsStore->userUpsert(['email' => $adminEmail, 'password_hash' => $hash]);
+            }
         } catch (RuntimeException $e) {
             Session::setFlash('error', $e->getMessage());
             $this->redirect('settings');
@@ -646,27 +689,13 @@ final class SettingsController extends BaseController
      */
     private function usersFromStore(): array
     {
-        $raw = (string) $this->config->get('USERS_JSON', '');
-        if ($raw === '') {
-            return [];
-        }
-
-        $decoded = json_decode($raw, true);
-        if (!is_array($decoded)) {
-            return [];
-        }
-
         $users = [];
-        foreach ($decoded as $username => $hash) {
-            $name = strtolower(trim((string) $username));
-            $passwordHash = trim((string) $hash);
-            if ($name === '' || $passwordHash === '') {
+        foreach ($this->settingsStore->userGetAll() as $user) {
+            if ($user['is_primary']) {
                 continue;
             }
-            $users[$name] = $passwordHash;
+            $users[$user['email']] = $user['password_hash'];
         }
-
-        ksort($users, SORT_NATURAL | SORT_FLAG_CASE);
 
         return $users;
     }
@@ -676,99 +705,7 @@ final class SettingsController extends BaseController
      */
     private function integrationsFromStore(): array
     {
-        $raw = (string) $this->config->get('INTEGRATIONS_JSON', '');
-        if ($raw === '') {
-            $migrated = $this->migrateOldIntegrations();
-            if ($migrated !== []) {
-                $this->persistIntegrations($migrated);
-            }
-
-            return $migrated;
-        }
-
-        $decoded = json_decode($raw, true);
-        if (!is_array($decoded)) {
-            return [];
-        }
-
-        $providers = IntegrationRegistry::providers();
-        $integrations = [];
-
-        foreach ($decoded as $entry) {
-            if (!is_array($entry)) {
-                continue;
-            }
-
-            $id = trim((string) ($entry['id'] ?? ''));
-            $name = trim((string) ($entry['name'] ?? ''));
-            $providerKey = trim((string) ($entry['provider'] ?? ''));
-            if ($id === '' || $name === '' || !isset($providers[$providerKey])) {
-                continue;
-            }
-
-            $integrations[] = [
-                'id' => $id,
-                'name' => $name,
-                'provider' => $providerKey,
-                'category' => (string) $providers[$providerKey]['category'],
-                'settings' => $this->normalizeIntegrationSettings(
-                    $providerKey,
-                    is_array($entry['settings'] ?? null) ? $entry['settings'] : [],
-                    []
-                ),
-            ];
-        }
-
-        return $integrations;
-    }
-
-    /**
-     * @return list<array{id:string,name:string,provider:string,category:string,settings:array<string,string>}>
-     */
-    private function migrateOldIntegrations(): array
-    {
-        $providers = IntegrationRegistry::providers();
-        $integrations = [];
-
-        $npmBaseUrl = trim((string) $this->config->get('NPM_BASE_URL', ''));
-        $npmIdentity = trim((string) $this->config->get('NPM_IDENTITY', ''));
-        $npmSecret = trim((string) $this->config->get('NPM_SECRET', ''));
-        if ($npmBaseUrl !== '' && $npmIdentity !== '' && $npmSecret !== '') {
-            $integrations[] = [
-                'id' => 'npm_legacy',
-                'name' => 'Nginx Proxy Manager',
-                'provider' => 'npm',
-                'category' => (string) $providers['npm']['category'],
-                'settings' => [
-                    'base_url' => $npmBaseUrl,
-                    'identity' => $npmIdentity,
-                    'secret' => $npmSecret,
-                    'forward_host' => trim((string) $this->config->get('NPM_FORWARD_HOST', '127.0.0.1')),
-                    'forward_port' => (string) $this->config->get('NPM_FORWARD_PORT', '80'),
-                ],
-            ];
-        }
-
-        $cfApiToken = trim((string) $this->config->get('CF_API_TOKEN', ''));
-        $cfZoneId = trim((string) $this->config->get('CF_ZONE_ID', ''));
-        $cfRecordIp = trim((string) $this->config->get('CF_RECORD_IP', ''));
-        if ($cfApiToken !== '' && $cfZoneId !== '' && $cfRecordIp !== '') {
-            $integrations[] = [
-                'id' => 'cloudflare_legacy',
-                'name' => 'Cloudflare',
-                'provider' => 'cloudflare',
-                'category' => (string) $providers['cloudflare']['category'],
-                'settings' => [
-                    'api_token' => $cfApiToken,
-                    'zone_id' => $cfZoneId,
-                    'record_ip' => $cfRecordIp,
-                    'ttl' => (string) $this->config->get('CF_TTL', '120'),
-                    'proxied' => $this->config->getBool('CF_PROXIED', false) ? '1' : '0',
-                ],
-            ];
-        }
-
-        return $integrations;
+        return $this->settingsStore->integrationGetAll();
     }
 
     /**
@@ -776,9 +713,21 @@ final class SettingsController extends BaseController
      */
     private function persistIntegrations(array $integrations): void
     {
-        $this->settingsStore->setMany([
-            'INTEGRATIONS_JSON' => json_encode($integrations, JSON_UNESCAPED_SLASHES) ?: '[]',
-        ]);
+        // Determine which IDs are in the new list
+        $newIds = array_column($integrations, 'id');
+        $existing = $this->settingsStore->integrationGetAll();
+
+        // Delete removed integrations
+        foreach ($existing as $old) {
+            if (!in_array($old['id'], $newIds, true)) {
+                $this->settingsStore->integrationDelete($old['id']);
+            }
+        }
+
+        // Upsert each integration in the new list
+        foreach ($integrations as $integration) {
+            $this->settingsStore->integrationUpsert($integration);
+        }
     }
 
     /**
@@ -786,32 +735,7 @@ final class SettingsController extends BaseController
      */
     private function syncLegacyIntegrationSettings(array $integrations): void
     {
-        $firstNpm = null;
-        $hasCloudflare = false;
-
-        foreach ($integrations as $integration) {
-            if (($integration['provider'] ?? '') === 'npm' && $firstNpm === null) {
-                $firstNpm = is_array($integration['settings'] ?? null) ? $integration['settings'] : [];
-            }
-            if (($integration['provider'] ?? '') === 'cloudflare') {
-                $hasCloudflare = true;
-            }
-        }
-
-        $settings = [
-            'CF_ENABLED' => $hasCloudflare ? 'true' : 'false',
-            'NPM_ENABLED' => $firstNpm !== null ? 'true' : 'false',
-        ];
-
-        if ($firstNpm !== null) {
-            $settings['NPM_BASE_URL'] = (string) ($firstNpm['base_url'] ?? '');
-            $settings['NPM_IDENTITY'] = (string) ($firstNpm['identity'] ?? '');
-            $settings['NPM_SECRET'] = (string) ($firstNpm['secret'] ?? '');
-            $settings['NPM_FORWARD_HOST'] = (string) ($firstNpm['forward_host'] ?? '127.0.0.1');
-            $settings['NPM_FORWARD_PORT'] = (string) ($firstNpm['forward_port'] ?? '80');
-        }
-
-        $this->settingsStore->setMany($settings);
+        unset($integrations);
     }
 
     private function storeNpmBootstrapCredentials(string $identity, string $secret): string
@@ -947,40 +871,45 @@ final class SettingsController extends BaseController
     /**
      * @param array{id:string,name:string,provider:string,category:string,settings:array<string,string>} $integration
      */
-    private function testIntegration(array $integration): void
+    private function testIntegration(array $integration): array
     {
         $settings = is_array($integration['settings'] ?? null) ? $integration['settings'] : [];
         $verifySsl = $this->config->getBool('CURL_VERIFY_SSL', true);
 
         if (($integration['provider'] ?? '') === 'npm') {
-            $service = new NpmService(
-                new Config([
-                    'NPM_BASE_URL' => (string) ($settings['base_url'] ?? ''),
-                    'NPM_IDENTITY' => (string) ($settings['identity'] ?? ''),
-                    'NPM_SECRET' => (string) ($settings['secret'] ?? ''),
-                    'NPM_FORWARD_HOST' => (string) ($settings['forward_host'] ?? '127.0.0.1'),
-                    'NPM_FORWARD_PORT' => (string) ($settings['forward_port'] ?? '80'),
-                    'NPM_SSL_ENABLED' => 'false',
-                    'NPM_CERTIFICATE_ID' => '0',
-                    'NPM_SSL_FORCED' => 'false',
-                    'NPM_HTTP2_SUPPORT' => 'false',
-                    'NPM_HSTS_ENABLED' => 'false',
-                    'NPM_HSTS_SUBDOMAINS' => 'false',
-                ]),
-                new HttpClient($verifySsl),
-                new Logger((string) $this->config->get('LOG_FILE', __DIR__ . '/../../storage/logs/app.log'))
-            );
-            $service->listCertificates();
+            $baseUrl = rtrim((string) ($settings['base_url'] ?? ''), '/');
+            if ($baseUrl === '') {
+                throw new RuntimeException('NPM base URL is not configured.');
+            }
 
-            return;
+            $result = (new HttpClient($verifySsl))->get($baseUrl . '/api');
+            $body = $result['body'] ?? null;
+            $status = is_array($body) ? ($body['status'] ?? '') : '';
+
+            if ($status !== 'OK') {
+                throw new RuntimeException('NPM API did not return OK status.');
+            }
+
+            return [
+                'type' => 'generic',
+                'message' => 'Connection successful.',
+            ];
         }
 
         if (($integration['provider'] ?? '') === 'cloudflare') {
-            if (!$this->config->getBool('CF_ENABLED', false)) {
-                throw new RuntimeException('Cloudflare integration is currently disabled. Enable it from the Integrations modal.');
-            }
+            $domains = array_values(array_map(
+                static fn (array $mapping): string => (string) ($mapping['domain'] ?? ''),
+                $this->cloudflareDomainsFromStore()
+            ));
+            $domains = array_values(array_filter($domains, static fn (string $domain): bool => $domain !== ''));
 
-            return;
+            return [
+                'type' => 'cloudflare-domains',
+                'domains' => $domains,
+                'message' => $domains === []
+                    ? 'Cloudflare is enabled, but no domains currently have Cloudflare DNS configured.'
+                    : 'Cloudflare is enabled for one or more domains.',
+            ];
         }
 
         throw new RuntimeException('Unsupported integration provider.');
@@ -991,38 +920,7 @@ final class SettingsController extends BaseController
      */
     private function cloudflareDomainsFromStore(): array
     {
-        $raw = (string) $this->config->get('CF_DOMAINS_JSON', '');
-        if ($raw === '') {
-            return [];
-        }
-
-        $decoded = json_decode($raw, true);
-        if (!is_array($decoded)) {
-            return [];
-        }
-
-        $rows = [];
-        foreach ($decoded as $entry) {
-            if (!is_array($entry)) {
-                continue;
-            }
-
-            $domain = strtolower(trim((string) ($entry['domain'] ?? '')));
-            $zoneId = trim((string) ($entry['zone_id'] ?? ''));
-            $apiToken = trim((string) ($entry['api_token'] ?? ''));
-
-            if ($domain === '' || $zoneId === '' || $apiToken === '') {
-                continue;
-            }
-
-            $rows[] = [
-                'domain' => $domain,
-                'zone_id' => $zoneId,
-                'api_token' => $apiToken,
-            ];
-        }
-
-        return $rows;
+        return $this->settingsStore->domainGetCfMappings();
     }
 
     /**
@@ -1030,9 +928,15 @@ final class SettingsController extends BaseController
      */
     private function persistCloudflareMappings(array $mappings): void
     {
-        $this->settingsStore->setMany([
-            'CF_DOMAINS_JSON' => json_encode($mappings, JSON_UNESCAPED_SLASHES) ?: '[]',
-        ]);
+        // Rebuild domains table from mappings and sync CF_DOMAINS_JSON
+        foreach ($mappings as $mapping) {
+            $this->settingsStore->domainUpsert([
+                'domain' => $mapping['domain'],
+                'cf_zone_id' => $mapping['zone_id'],
+                'cf_api_token' => $mapping['api_token'],
+            ]);
+        }
+        $this->settingsStore->syncCfDomainsJson();
     }
 
     private function handleAdminUsernameUpdate(): void
@@ -1052,10 +956,22 @@ final class SettingsController extends BaseController
             throw new RuntimeException('That email already exists as an additional user.');
         }
 
+        $oldAdmin = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+
         $this->settingsStore->setMany([
             'ADMIN_USER' => $newAdmin,
             'ADMIN_FULL_NAME' => $newAdminFullName,
         ]);
+
+        if ($oldAdmin !== '' && $oldAdmin !== $newAdmin) {
+            $this->settingsStore->userUpdateEmail($oldAdmin, $newAdmin);
+        }
+
+        $this->settingsStore->userUpsert([
+            'email' => $newAdmin,
+            'full_name' => $newAdminFullName,
+        ]);
+
         $_SESSION['username'] = $newAdmin;
         $_SESSION['display_name'] = $newAdminFullName;
         $_SESSION['account_role'] = 'Primary Admin';
@@ -1088,43 +1004,21 @@ final class SettingsController extends BaseController
             throw new RuntimeException('Full name must be between 2 and 120 characters.');
         }
 
-        $users = $this->usersFromStore();
-        if (!array_key_exists($targetUser, $users)) {
+        $existing = $this->settingsStore->userGet($targetUser);
+        if ($existing === null || (bool) $existing['is_primary']) {
             throw new RuntimeException('User not found.');
         }
 
-        if ($newEmail !== $targetUser && array_key_exists($newEmail, $users)) {
-            throw new RuntimeException('Email already exists.');
-        }
-
-        $usersMeta = $this->usersMetaFromStore();
-        $existingMeta = $usersMeta[$targetUser] ?? [
-            'full_name' => '',
-            'account_type' => 'user',
-            'active' => true,
-            'created_at' => date('c'),
-            'last_login_at' => '',
-        ];
-
         if ($newEmail !== $targetUser) {
-            $users[$newEmail] = $users[$targetUser];
-            unset($users[$targetUser]);
-
-            unset($usersMeta[$targetUser]);
-            $usersMeta[$newEmail] = $existingMeta;
+            if ($this->settingsStore->userGet($newEmail) !== null) {
+                throw new RuntimeException('Email already exists.');
+            }
+            $this->settingsStore->userUpdateEmail($targetUser, $newEmail);
         }
 
-        $usersMeta[$newEmail]['full_name'] = $newFullName;
-        $usersMeta[$newEmail]['account_type'] = (string) ($usersMeta[$newEmail]['account_type'] ?? 'user') === 'admin' ? 'admin' : 'user';
-        $usersMeta[$newEmail]['active'] = !array_key_exists('active', $usersMeta[$newEmail]) || (bool) $usersMeta[$newEmail]['active'];
-        $usersMeta[$newEmail]['created_at'] = (string) ($usersMeta[$newEmail]['created_at'] ?? date('c'));
-        $usersMeta[$newEmail]['last_login_at'] = (string) ($usersMeta[$newEmail]['last_login_at'] ?? '');
-
-        ksort($users, SORT_NATURAL | SORT_FLAG_CASE);
-
-        $this->settingsStore->setMany([
-            'USERS_JSON' => json_encode($users, JSON_UNESCAPED_SLASHES) ?: '{}',
-            'USERS_META_JSON' => json_encode($usersMeta, JSON_UNESCAPED_SLASHES) ?: '{}',
+        $this->settingsStore->userUpsert([
+            'email' => $newEmail,
+            'full_name' => $newFullName,
         ]);
 
         $sessionUser = strtolower(trim((string) ($_SESSION['username'] ?? '')));
@@ -1173,26 +1067,19 @@ final class SettingsController extends BaseController
             throw new RuntimeException('Failed to generate password hash.');
         }
 
-        $users = $this->usersFromStore();
-        if (array_key_exists($username, $users)) {
+        if ($this->settingsStore->userGet($username) !== null) {
             throw new RuntimeException('Email already exists.');
         }
 
-        $users[$username] = $hash;
-        ksort($users, SORT_NATURAL | SORT_FLAG_CASE);
-
-        $usersMeta = $this->usersMetaFromStore();
-        $usersMeta[$username] = [
+        $this->settingsStore->userUpsert([
+            'email' => $username,
+            'password_hash' => $hash,
             'full_name' => $fullName,
             'account_type' => $role,
-            'active' => true,
+            'is_primary' => 0,
+            'active' => 1,
             'created_at' => date('c'),
             'last_login_at' => '',
-        ];
-
-        $this->settingsStore->setMany([
-            'USERS_JSON' => json_encode($users, JSON_UNESCAPED_SLASHES) ?: '{}',
-            'USERS_META_JSON' => json_encode($usersMeta, JSON_UNESCAPED_SLASHES) ?: '{}',
         ]);
     }
 
@@ -1227,16 +1114,12 @@ final class SettingsController extends BaseController
             return;
         }
 
-        $users = $this->usersFromStore();
-        if (!array_key_exists($targetUser, $users)) {
+        $existing = $this->settingsStore->userGet($targetUser);
+        if ($existing === null || (bool) $existing['is_primary']) {
             throw new RuntimeException('User not found.');
         }
 
-        $users[$targetUser] = $hash;
-
-        $this->settingsStore->setMany([
-            'USERS_JSON' => json_encode($users, JSON_UNESCAPED_SLASHES) ?: '{}',
-        ]);
+        $this->settingsStore->userUpsert(['email' => $targetUser, 'password_hash' => $hash]);
     }
 
     private function handleUserDelete(): void
@@ -1257,20 +1140,7 @@ final class SettingsController extends BaseController
             throw new RuntimeException('At least one active admin account is required.');
         }
 
-        $users = $this->usersFromStore();
-        if (!array_key_exists($targetUser, $users)) {
-            throw new RuntimeException('User not found.');
-        }
-
-        unset($users[$targetUser]);
-
-        $usersMeta = $this->usersMetaFromStore();
-        unset($usersMeta[$targetUser]);
-
-        $this->settingsStore->setMany([
-            'USERS_JSON' => json_encode($users, JSON_UNESCAPED_SLASHES) ?: '{}',
-            'USERS_META_JSON' => json_encode($usersMeta, JSON_UNESCAPED_SLASHES) ?: '{}',
-        ]);
+        $this->settingsStore->userDelete($targetUser);
     }
 
     private function handleUserToggleStatus(): void
@@ -1295,17 +1165,9 @@ final class SettingsController extends BaseController
             throw new RuntimeException('At least one active admin account is required.');
         }
 
-        $usersMeta = $this->usersMetaFromStore();
-        $usersMeta[$targetUser] = [
-            'full_name' => (string) ($records[$targetUser]['full_name'] ?? ''),
-            'account_type' => (string) ($records[$targetUser]['account_type'] ?? 'user'),
-            'active' => (bool) ($records[$targetUser]['active'] ?? true),
-            'created_at' => (string) ($records[$targetUser]['created_at'] ?? date('c')),
-            'last_login_at' => (string) ($records[$targetUser]['last_login_at'] ?? ''),
-        ];
-
-        $this->settingsStore->setMany([
-            'USERS_META_JSON' => json_encode($usersMeta, JSON_UNESCAPED_SLASHES) ?: '{}',
+        $this->settingsStore->userUpsert([
+            'email' => $targetUser,
+            'active' => (int) (bool) ($records[$targetUser]['active'] ?? true),
         ]);
     }
 
@@ -1334,17 +1196,9 @@ final class SettingsController extends BaseController
             throw new RuntimeException('At least one active admin account is required.');
         }
 
-        $usersMeta = $this->usersMetaFromStore();
-        $usersMeta[$targetUser] = [
-            'full_name' => (string) ($records[$targetUser]['full_name'] ?? ''),
+        $this->settingsStore->userUpsert([
+            'email' => $targetUser,
             'account_type' => $nextRole,
-            'active' => (bool) ($records[$targetUser]['active'] ?? true),
-            'created_at' => (string) ($records[$targetUser]['created_at'] ?? date('c')),
-            'last_login_at' => (string) ($records[$targetUser]['last_login_at'] ?? ''),
-        ];
-
-        $this->settingsStore->setMany([
-            'USERS_META_JSON' => json_encode($usersMeta, JSON_UNESCAPED_SLASHES) ?: '{}',
         ]);
     }
 
@@ -1353,37 +1207,21 @@ final class SettingsController extends BaseController
      */
     private function usersMetaFromStore(): array
     {
-        $raw = (string) $this->config->get('USERS_META_JSON', '');
-        if ($raw === '') {
-            return [];
-        }
-
-        $decoded = json_decode($raw, true);
-        if (!is_array($decoded)) {
-            return [];
-        }
-
-        $rows = [];
-        foreach ($decoded as $email => $meta) {
-            if (!is_array($meta)) {
+        $meta = [];
+        foreach ($this->settingsStore->userGetAll() as $user) {
+            if ($user['is_primary']) {
                 continue;
             }
-
-            $normalized = strtolower(trim((string) $email));
-            if ($normalized === '') {
-                continue;
-            }
-
-            $rows[$normalized] = [
-                'full_name' => trim((string) ($meta['full_name'] ?? '')),
-                'account_type' => (string) ($meta['account_type'] ?? 'user') === 'admin' ? 'admin' : 'user',
-                'active' => !array_key_exists('active', $meta) || (bool) $meta['active'],
-                'created_at' => trim((string) ($meta['created_at'] ?? '')),
-                'last_login_at' => trim((string) ($meta['last_login_at'] ?? '')),
+            $meta[$user['email']] = [
+                'full_name' => $user['full_name'],
+                'account_type' => $user['account_type'],
+                'active' => (bool) $user['active'],
+                'created_at' => $user['created_at'],
+                'last_login_at' => $user['last_login_at'],
             ];
         }
 
-        return $rows;
+        return $meta;
     }
 
     /**
@@ -1391,45 +1229,18 @@ final class SettingsController extends BaseController
      */
     private function userRecordsFromStore(): array
     {
-        $adminEmail = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
-        $adminFullName = trim((string) $this->config->get('ADMIN_FULL_NAME', ''));
-        $adminCreatedAt = trim((string) $this->config->get('ADMIN_CREATED_AT', ''));
-        $adminLastLoginAt = trim((string) $this->config->get('ADMIN_LAST_LOGIN_AT', ''));
-
-        $records = [
-            $adminEmail => [
-                'email' => $adminEmail,
-                'full_name' => $adminFullName !== '' ? $adminFullName : $adminEmail,
-                'account_type' => 'admin',
-                'active' => true,
-                'created_at' => $adminCreatedAt,
-                'last_login_at' => $adminLastLoginAt,
-                'is_primary' => true,
-                'is_online' => false,
-            ],
-        ];
-
-        $users = $this->usersFromStore();
-        $usersMeta = $this->usersMetaFromStore();
-
-        foreach ($users as $email => $hash) {
-            unset($hash);
-            $meta = $usersMeta[$email] ?? [
-                'full_name' => '',
-                'account_type' => 'user',
-                'active' => true,
-                'created_at' => '',
-                'last_login_at' => '',
-            ];
-
+        $records = [];
+        foreach ($this->settingsStore->userGetAll() as $user) {
+            $email = $user['email'];
+            $fullName = trim((string) ($user['full_name'] ?? ''));
             $records[$email] = [
                 'email' => $email,
-                'full_name' => trim((string) ($meta['full_name'] ?? '')) !== '' ? (string) $meta['full_name'] : $email,
-                'account_type' => (string) ($meta['account_type'] ?? 'user') === 'admin' ? 'admin' : 'user',
-                'active' => !array_key_exists('active', $meta) || (bool) $meta['active'],
-                'created_at' => (string) ($meta['created_at'] ?? ''),
-                'last_login_at' => (string) ($meta['last_login_at'] ?? ''),
-                'is_primary' => false,
+                'full_name' => $fullName !== '' ? $fullName : $email,
+                'account_type' => (string) ($user['account_type'] ?? 'user') === 'admin' ? 'admin' : 'user',
+                'active' => (bool) $user['active'],
+                'created_at' => (string) ($user['created_at'] ?? ''),
+                'last_login_at' => (string) ($user['last_login_at'] ?? ''),
+                'is_primary' => (bool) ($user['is_primary'] ?? false),
                 'is_online' => false,
             ];
         }
@@ -1466,36 +1277,12 @@ final class SettingsController extends BaseController
      */
     private function domainOptionsFromStore(): array
     {
-        $raw = (string) $this->config->get('DOMAINS_JSON', '');
-        $decoded = json_decode($raw, true);
         $domains = [];
-
-        if (is_array($decoded)) {
-            foreach ($decoded as $entry) {
-                if (is_string($entry)) {
-                    $domain = strtolower(trim($entry));
-                } elseif (is_array($entry)) {
-                    $domain = strtolower(trim((string) ($entry['domain'] ?? '')));
-                } else {
-                    continue;
-                }
-
-                if ($domain !== '' && DomainValidator::isValid($domain) && !in_array($domain, $domains, true)) {
-                    $domains[] = $domain;
-                }
-            }
-        }
-
-        foreach ($this->cloudflareDomainsFromStore() as $mapping) {
-            $domain = strtolower(trim((string) ($mapping['domain'] ?? '')));
-            if ($domain !== '' && DomainValidator::isValid($domain) && !in_array($domain, $domains, true)) {
+        foreach ($this->settingsStore->domainGetAll() as $domainRecord) {
+            $domain = (string) ($domainRecord['domain'] ?? '');
+            if ($domain !== '') {
                 $domains[] = $domain;
             }
-        }
-
-        $currentBaseDomain = strtolower(trim((string) $this->config->get('VHOST_BASE_DOMAIN', '')));
-        if ($currentBaseDomain !== '' && DomainValidator::isValid($currentBaseDomain) && !in_array($currentBaseDomain, $domains, true)) {
-            $domains[] = $currentBaseDomain;
         }
 
         sort($domains, SORT_NATURAL | SORT_FLAG_CASE);
@@ -1749,14 +1536,8 @@ final class SettingsController extends BaseController
 
     private function buildNpmServiceIdentity(string $email): string
     {
-        $localPart = strtolower(trim((string) strtok($email, '@')));
-        $localPart = preg_replace('/[^a-z0-9._-]/', '', $localPart);
-        $localPart = is_string($localPart) ? trim($localPart, '._-') : '';
+        unset($email);
 
-        if ($localPart === '') {
-            $localPart = 'vhm';
-        }
-
-        return $localPart . '@vhost-manager.npm';
+        return strtolower(bin2hex(random_bytes(3))) . '@vhost-manager.npm';
     }
 }

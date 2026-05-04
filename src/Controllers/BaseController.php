@@ -6,11 +6,14 @@ namespace App\Controllers;
 
 use App\Core\Config;
 use App\Core\Session;
+use App\Services\SettingsStore;
 
 abstract class BaseController
 {
-    public function __construct(protected readonly Config $config)
-    {
+    public function __construct(
+        protected readonly Config $config,
+        protected readonly SettingsStore $settingsStore
+    ) {
     }
 
     protected function render(string $template, array $data = []): void
@@ -22,8 +25,6 @@ abstract class BaseController
         $cspNonce = $_SERVER['CSP_NONCE'] ?? '';
         $appVersion = (string) $this->config->get('APP_VERSION', 'dev');
 
-        // Extract data first so callers can override any variable, then set
-        // $username from session (the logged-in user) which is used by the layout.
         extract($data, EXTR_OVERWRITE);
         $username = $_SESSION['username'] ?? null;
         $displayName = is_string($username) ? $username : '';
@@ -31,20 +32,16 @@ abstract class BaseController
 
         if (is_string($username) && $username !== '') {
             $identity = strtolower(trim($username));
-            $adminEmail = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+            $userRecord = $this->settingsStore->userGet($identity);
 
-            if ($identity === $adminEmail) {
-                $adminFullName = trim((string) $this->config->get('ADMIN_FULL_NAME', ''));
-                $displayName = $adminFullName !== '' ? $adminFullName : $username;
-                $accountRole = 'Primary Admin';
-            } else {
-                $usersMetaRaw = (string) $this->config->get('USERS_META_JSON', '');
-                $usersMeta = json_decode($usersMetaRaw, true);
-                if (is_array($usersMeta) && isset($usersMeta[$identity]) && is_array($usersMeta[$identity])) {
-                    $fullName = trim((string) ($usersMeta[$identity]['full_name'] ?? ''));
-                    $displayName = $fullName !== '' ? $fullName : $username;
-                    $accountType = (string) ($usersMeta[$identity]['account_type'] ?? 'user');
-                    $accountRole = $accountType === 'admin' ? 'Admin' : 'User';
+            if ($userRecord !== null) {
+                $fullName = trim((string) ($userRecord['full_name'] ?? ''));
+                $displayName = $fullName !== '' ? $fullName : $username;
+
+                if ($userRecord['is_primary']) {
+                    $accountRole = 'Primary Admin';
+                } else {
+                    $accountRole = ($userRecord['account_type'] ?? 'user') === 'admin' ? 'Admin' : 'User';
                 }
             }
         }

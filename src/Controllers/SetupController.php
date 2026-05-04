@@ -8,6 +8,7 @@ use App\Core\Config;
 use App\Core\Session;
 use App\Security\Csrf;
 use App\Services\HttpClient;
+use App\Services\IntegrationRegistry;
 use App\Services\SettingsStore;
 use RuntimeException;
 
@@ -16,10 +17,10 @@ final class SetupController extends BaseController
     public function __construct(
         Config $config,
         private readonly Csrf $csrf,
-        private readonly SettingsStore $settingsStore,
+        SettingsStore $settingsStore,
         private readonly HttpClient $httpClient
     ) {
-        parent::__construct($config);
+        parent::__construct($config, $settingsStore);
     }
 
     /**
@@ -169,7 +170,7 @@ final class SetupController extends BaseController
             $_SESSION['setup_pending_admin_password'] = $password;
         }
 
-        $this->redirect('setup-integration');
+        $this->redirect('setup-proxy');
     }
 
     /**
@@ -231,9 +232,9 @@ final class SetupController extends BaseController
     }
 
     /**
-     * Show page 2 of setup: Proxy/Integration selection
+     * Show page 2 of setup: Proxy integration (NPM)
      */
-    public function showIntegration(): void
+    public function showProxy(): void
     {
         if ($this->isSetupComplete()) {
             $this->redirect(Session::isAuthenticated() ? 'dashboard' : 'login');
@@ -244,29 +245,37 @@ final class SetupController extends BaseController
             $this->redirect('setup');
         }
 
-        $npmForwardPort = (int) (getenv('VHM_NPM_FORWARD_PORT') ?: '80');
-        $defaultBuiltinIdentity = strtolower(trim((string) ($pendingSetup['ADMIN_USER'] ?? 'admin@example.com')));
-        $defaultBuiltinSecret = (string) ($_SESSION['setup_pending_admin_password'] ?? '');
+        $pending = $_SESSION['setup_pending_proxy'] ?? null;
+        $pending = is_array($pending) ? $pending : [];
 
-        $this->render('auth/setup-integration.php', [
-            'csrfToken' => $this->csrf->token(),
-            'hasBuiltinNpm' => $this->hasBuiltinNpm(),
-            'proxyMode' => $_SESSION['setup_pending_proxy_mode'] ?? ($this->hasBuiltinNpm() ? 'builtin_npm' : 'disabled'),
-            'builtinNpmIdentity' => $_SESSION['setup_pending_builtin_npm_identity'] ?? $defaultBuiltinIdentity,
-            'builtinNpmSecret' => $_SESSION['setup_pending_builtin_npm_secret'] ?? $defaultBuiltinSecret,
-            'npmBaseUrl' => $_SESSION['setup_pending_npm_base_url'] ?? '',
-            'npmIdentity' => $_SESSION['setup_pending_npm_identity'] ?? '',
-            'npmSecret' => $_SESSION['setup_pending_npm_secret'] ?? '',
-            'npmForwardHost' => $_SESSION['setup_pending_npm_forward_host'] ?? '',
-            'npmForwardPort' => $_SESSION['setup_pending_npm_forward_port'] ?? (string) $npmForwardPort,
-            'externalNpmTestError' => $this->consumeExternalNpmTestError(),
+        $proxyProviders = $this->setupProvidersByCategory('proxy');
+        $selectedProxyProvider = (string) ($pending['provider'] ?? (array_key_first($proxyProviders) ?: ''));
+        $proxyStep = (string) ($pending['step'] ?? '1');
+        if (!in_array($proxyStep, ['1', '2'], true)) {
+            $proxyStep = '1';
+        }
+        $fieldErrors = Session::consumeFieldErrors();
+
+        $this->render('auth/setup-proxy.php', [
+            'csrfToken'         => $this->csrf->token(),
+            'name'              => (string) ($pending['name'] ?? ''),
+            'proxyProviders'    => $proxyProviders,
+            'selectedProxyProvider' => $selectedProxyProvider,
+            'proxyStep'         => $proxyStep,
+            'fieldErrors'       => $fieldErrors,
+            'npmBaseUrlScheme'  => (string) ($pending['base_url_scheme'] ?? 'http'),
+            'npmBaseUrlInput'   => (string) ($pending['base_url_input'] ?? ''),
+            'npmAdminIdentity'  => (string) ($pending['admin_identity'] ?? ''),
+            'npmRuntimeIdentity'=> (string) ($pending['identity'] ?? ''),
+            'npmForwardHost'    => (string) ($pending['forward_host'] ?? ''),
+            'npmForwardPort'    => (string) ($pending['forward_port'] ?? '80'),
         ]);
     }
 
     /**
-     * Process page 2: validate integrations, store in session
+     * Process page 2: validate proxy integration, provision service account, store in session
      */
-    public function completeIntegration(): void
+    public function completeProxy(): void
     {
         if ($this->isSetupComplete()) {
             $this->redirect('login');
@@ -274,7 +283,7 @@ final class SetupController extends BaseController
 
         if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
             Session::setFlash('error', 'Invalid CSRF token.');
-            $this->redirect('setup-integration');
+            $this->redirect('setup-proxy');
         }
 
         $pendingSetup = $_SESSION['setup_pending'] ?? null;
@@ -282,113 +291,251 @@ final class SetupController extends BaseController
             $this->redirect('setup');
         }
 
-        $proxyMode = trim((string) ($_POST['proxy_mode'] ?? ($this->hasBuiltinNpm() ? 'builtin_npm' : 'disabled')));
-
-        if (!in_array($proxyMode, ['builtin_npm', 'external_npm', 'disabled'], true)) {
-            Session::setFlash('error', 'Invalid proxy mode selected.');
-            $this->redirect('setup-integration');
+        if (isset($_POST['skip'])) {
+            unset($_SESSION['setup_pending_proxy']);
+            $this->redirect('setup-dns');
         }
 
-        if (!$this->hasBuiltinNpm() && $proxyMode === 'builtin_npm') {
-            Session::setFlash('error', 'Built-in NPM is not available in this deployment.');
-            $this->redirect('setup-integration');
+        if (isset($_POST['back_step'])) {
+            $pending = $_SESSION['setup_pending_proxy'] ?? [];
+            if (!is_array($pending)) {
+                $pending = [];
+            }
+            $pending['step'] = '1';
+            $_SESSION['setup_pending_proxy'] = $pending;
+            $this->redirect('setup-proxy');
         }
 
-        $_SESSION['setup_pending_proxy_mode'] = $proxyMode;
-
-        // Handle built-in NPM credentials if selected
-        if ($proxyMode === 'builtin_npm') {
-            $npmIdentity = strtolower(trim((string) ($_POST['builtin_npm_identity'] ?? '')));
-            $npmSecret = (string) ($_POST['builtin_npm_secret'] ?? '');
-            if ($npmSecret === '') {
-                $npmSecret = (string) ($_SESSION['setup_pending_admin_password'] ?? '');
-            }
-
-            if ($npmIdentity === '' || !filter_var($npmIdentity, FILTER_VALIDATE_EMAIL)) {
-                Session::setFlash('error', 'NPM admin email must be a valid email address.');
-                $this->redirect('setup-integration');
-            }
-
-            if (strlen($npmSecret) < 8) {
-                Session::setFlash('error', 'NPM admin password must be at least 8 characters long.');
-                $this->redirect('setup-integration');
-            }
-
-            $_SESSION['setup_pending_builtin_npm_identity'] = $npmIdentity;
-            $_SESSION['setup_pending_builtin_npm_secret'] = $npmSecret;
+        $proxyProviders = $this->setupProvidersByCategory('proxy');
+        $providerKey = trim((string) ($_POST['proxy_provider'] ?? ''));
+        if ($providerKey === '' && $proxyProviders !== []) {
+            $providerKey = (string) array_key_first($proxyProviders);
         }
 
-        // Handle external NPM settings if selected
-        if ($proxyMode === 'external_npm') {
-            $npmBaseUrlScheme = strtolower(trim((string) ($_POST['npm_base_url_scheme'] ?? 'http')));
-            $npmBaseUrlHost = trim((string) ($_POST['npm_base_url_host'] ?? ''));
-            $npmBaseUrlPort = (int) ($_POST['npm_base_url_port'] ?? 81);
-            $npmBaseUrl = $npmBaseUrlScheme . '://' . $npmBaseUrlHost . ':' . $npmBaseUrlPort;
+        if (!isset($proxyProviders[$providerKey])) {
+            Session::setFlash('error', 'Invalid proxy provider selected.');
+            $this->redirect('setup-proxy');
+        }
 
-            $npmIdentity = strtolower(trim((string) ($_POST['npm_identity'] ?? '')));
-            $npmSecret = trim((string) ($_POST['npm_secret'] ?? ''));
-            $npmForwardHost = trim((string) ($_POST['npm_forward_host'] ?? ''));
-            $npmForwardPort = (int) ($_POST['npm_forward_port'] ?? 80);
+        $pending = $_SESSION['setup_pending_proxy'] ?? [];
+        if (!is_array($pending)) {
+            $pending = [];
+        }
 
-            if ($npmBaseUrlHost === '' || filter_var($npmBaseUrlHost, FILTER_VALIDATE_IP) === false && !preg_match('/^[a-z0-9.-]+$/i', $npmBaseUrlHost)) {
-                Session::setFlash('error', 'NPM host must be a valid IP address or hostname.');
-                $this->redirect('setup-integration');
+        $step = trim((string) ($_POST['proxy_step'] ?? ($pending['step'] ?? '1')));
+        if (!in_array($step, ['1', '2'], true)) {
+            $step = '1';
+        }
+
+        $name              = trim((string) ($_POST['name'] ?? ''));
+        $npmBaseUrlScheme  = strtolower(trim((string) ($_POST['npm_base_url_scheme'] ?? 'http')));
+        if (!in_array($npmBaseUrlScheme, ['http', 'https'], true)) {
+            $npmBaseUrlScheme = 'http';
+        }
+        $npmBaseUrlInput   = trim((string) ($_POST['npm_base_url_input'] ?? ''));
+        $npmBaseUrlInput   = preg_replace('#^https?://#i', '', $npmBaseUrlInput);
+        $npmBaseUrlInput   = is_string($npmBaseUrlInput) ? ltrim($npmBaseUrlInput, '/') : '';
+        $npmBaseUrl        = $npmBaseUrlInput !== '' ? $npmBaseUrlScheme . '://' . $npmBaseUrlInput : '';
+        $npmAdminIdentity  = strtolower(trim((string) ($_POST['npm_admin_identity'] ?? '')));
+        $npmAdminSecret    = trim((string) ($_POST['npm_admin_secret'] ?? ''));
+        $npmForwardHost    = trim((string) ($_POST['npm_forward_host'] ?? ''));
+        $npmForwardPort    = (int) ($_POST['npm_forward_port'] ?? 80);
+
+        $fieldErrors = [];
+        if ($name === '') {
+            $fieldErrors['name'] = 'Integration name is required.';
+        }
+
+        // Persist form values so they survive error redirects.
+        $_SESSION['setup_pending_proxy'] = [
+            'provider'        => $providerKey,
+            'name'            => $name,
+            'step'            => $step,
+            'base_url_scheme' => $npmBaseUrlScheme,
+            'base_url_input'  => $npmBaseUrlInput,
+            'admin_identity'  => $npmAdminIdentity,
+            'forward_host'    => $npmForwardHost,
+            'forward_port'    => (string) $npmForwardPort,
+            'identity'        => (string) ($pending['identity'] ?? ''),
+            'secret'          => (string) ($pending['secret'] ?? ''),
+            'base_url'        => (string) ($pending['base_url'] ?? ''),
+        ];
+
+        // Non-NPM providers are included automatically in setup dropdowns.
+        // They can be enabled in setup and configured in detail later from Integrations.
+        if ($providerKey !== 'npm') {
+            if ($fieldErrors !== []) {
+                Session::setFieldErrors($fieldErrors);
+                $this->redirect('setup-proxy');
             }
 
-            if ($npmBaseUrlPort < 1 || $npmBaseUrlPort > 65535) {
-                Session::setFlash('error', 'NPM port must be between 1 and 65535.');
-                $this->redirect('setup-integration');
+            $_SESSION['setup_pending_proxy'] = [
+                'provider' => $providerKey,
+                'name' => $name,
+                'settings' => [],
+            ];
+            $this->redirect('setup-dns');
+        }
+
+        if ($step === '1') {
+            if ($npmBaseUrlInput === '' || filter_var($npmBaseUrl, FILTER_VALIDATE_URL) === false) {
+                $fieldErrors['npm_base_url_input'] = 'NPM base URL must be a valid URL.';
             }
 
-            if ($npmIdentity === '' || $npmSecret === '') {
-                Session::setFlash('error', 'NPM admin email and password are required one time to provision the VHM account.');
-                $this->redirect('setup-integration');
+            if ($npmAdminIdentity === '' || filter_var($npmAdminIdentity, FILTER_VALIDATE_EMAIL) === false) {
+                $fieldErrors['npm_admin_identity'] = 'NPM admin email must be a valid email address.';
             }
 
-            if (filter_var($npmIdentity, FILTER_VALIDATE_EMAIL) === false) {
-                Session::setFlash('error', 'NPM identity must be a valid email address.');
-                $this->redirect('setup-integration');
+            if ($npmAdminSecret === '') {
+                $fieldErrors['npm_admin_secret'] = 'NPM admin password or API token is required.';
             }
 
-            if ($npmForwardHost === '') {
-                Session::setFlash('error', 'Forward address is required.');
-                $this->redirect('setup-integration');
+            if ($fieldErrors !== []) {
+                Session::setFieldErrors($fieldErrors);
+                $this->redirect('setup-proxy');
             }
 
-            if ($npmForwardPort < 1 || $npmForwardPort > 65535) {
-                Session::setFlash('error', 'Forward port must be between 1 and 65535.');
-                $this->redirect('setup-integration');
-            }
-
-            $testError = $this->testExternalNpmConnection($npmBaseUrl, $npmIdentity, $npmSecret);
+            $testError = $this->testExternalNpmConnection($npmBaseUrl, $npmAdminIdentity, $npmAdminSecret);
             if ($testError !== null) {
-                $_SESSION['setup_external_npm_test_error'] = $testError;
-                Session::setFlash('error', 'Failed to connect to external NPM. Check the details and try again.');
-                $this->redirect('setup-integration');
+                Session::setFieldErrors([
+                    'npm_step_1' => $testError,
+                ]);
+                $this->redirect('setup-proxy');
             }
 
             try {
-                $serviceAccount = $this->provisionNpmServiceAccount($npmBaseUrl, $npmIdentity, $npmSecret);
+                $serviceAccount = $this->provisionNpmServiceAccount($npmBaseUrl, $npmAdminIdentity, $npmAdminSecret);
             } catch (RuntimeException $e) {
-                $_SESSION['setup_external_npm_test_error'] = $e->getMessage();
-                Session::setFlash('error', 'Connected to NPM but failed to provision the VHM account.');
-                $this->redirect('setup-integration');
+                Session::setFieldErrors([
+                    'npm_step_1' => $e->getMessage(),
+                ]);
+                $this->redirect('setup-proxy');
             }
 
-            unset($_SESSION['setup_external_npm_test_error']);
+            $_SESSION['setup_pending_proxy'] = [
+                'provider'     => $providerKey,
+                'name'         => $name,
+                'step'         => '2',
+                'base_url'     => $npmBaseUrl,
+                'identity'     => $serviceAccount['identity'],
+                'secret'       => $serviceAccount['secret'],
+                'base_url_scheme' => $npmBaseUrlScheme,
+                'base_url_input' => $npmBaseUrlInput,
+                'admin_identity' => $npmAdminIdentity,
+                'forward_host' => $npmForwardHost,
+                'forward_port' => (string) $npmForwardPort,
+            ];
 
-            $_SESSION['setup_pending_npm_base_url'] = $npmBaseUrl;
-            $_SESSION['setup_pending_npm_identity'] = $serviceAccount['identity'];
-            $_SESSION['setup_pending_npm_secret'] = $serviceAccount['secret'];
-            $_SESSION['setup_pending_npm_forward_host'] = $npmForwardHost;
-            $_SESSION['setup_pending_npm_forward_port'] = (string) $npmForwardPort;
+            $this->redirect('setup-proxy');
         }
 
+        if ((string) ($pending['identity'] ?? '') === '' || (string) ($pending['secret'] ?? '') === '' || (string) ($pending['base_url'] ?? '') === '') {
+            Session::setFlash('error', 'NPM setup step 1 must be completed before step 2.');
+            $this->redirect('setup-proxy');
+        }
+
+        if ($npmForwardHost === '') {
+            $fieldErrors['npm_forward_host'] = 'Forward URL/host is required.';
+        }
+
+        if ($npmForwardPort < 1 || $npmForwardPort > 65535) {
+            $fieldErrors['npm_forward_port'] = 'Forward port must be between 1 and 65535.';
+        }
+
+        if ($fieldErrors !== []) {
+            Session::setFieldErrors($fieldErrors);
+            $this->redirect('setup-proxy');
+        }
+
+        $_SESSION['setup_pending_proxy'] = [
+            'provider'     => $providerKey,
+            'name'         => $name,
+            'base_url'     => (string) $pending['base_url'],
+            'identity'     => (string) $pending['identity'],
+            'secret'       => (string) $pending['secret'],
+            'forward_host' => $npmForwardHost,
+            'forward_port' => (string) $npmForwardPort,
+        ];
+
+        $this->redirect('setup-dns');
+    }
+
+    /**
+     * Show page 3 of setup: DNS integration (Cloudflare)
+     */
+    public function showDns(): void
+    {
+        if ($this->isSetupComplete()) {
+            $this->redirect(Session::isAuthenticated() ? 'dashboard' : 'login');
+        }
+
+        $pendingSetup = $_SESSION['setup_pending'] ?? null;
+        if (!is_array($pendingSetup)) {
+            $this->redirect('setup');
+        }
+
+        $pending = $_SESSION['setup_pending_dns'] ?? null;
+        $pending = is_array($pending) ? $pending : [];
+
+        $dnsProviders = $this->setupProvidersByCategory('dns');
+        $selectedDnsProvider = (string) ($pending['provider'] ?? (array_key_first($dnsProviders) ?: ''));
+
+        $this->render('auth/setup-dns.php', [
+            'csrfToken' => $this->csrf->token(),
+            'name' => (string) ($pending['name'] ?? ''),
+            'dnsProviders' => $dnsProviders,
+            'selectedDnsProvider' => $selectedDnsProvider,
+            'fieldErrors' => Session::consumeFieldErrors(),
+        ]);
+    }
+
+    /**
+     * Process page 3: validate DNS integration, store in session
+     */
+    public function completeDns(): void
+    {
+        if ($this->isSetupComplete()) {
+            $this->redirect('login');
+        }
+
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            Session::setFlash('error', 'Invalid CSRF token.');
+            $this->redirect('setup-dns');
+        }
+
+        $pendingSetup = $_SESSION['setup_pending'] ?? null;
+        if (!is_array($pendingSetup)) {
+            $this->redirect('setup');
+        }
+
+        if (isset($_POST['skip'])) {
+            unset($_SESSION['setup_pending_dns']);
+            $this->redirect('setup-confirm');
+        }
+
+        $dnsProviders = $this->setupProvidersByCategory('dns');
+        $providerKey = trim((string) ($_POST['dns_provider'] ?? ''));
+        if ($providerKey === '' && $dnsProviders !== []) {
+            $providerKey = (string) array_key_first($dnsProviders);
+        }
+
+        if (!isset($dnsProviders[$providerKey])) {
+            Session::setFieldErrors(['dns_provider' => 'Invalid DNS provider selected.']);
+            $this->redirect('setup-dns');
+        }
+
+        $name = trim((string) ($_POST['name'] ?? ''));
+        if ($name === '') {
+            Session::setFieldErrors(['name' => 'Integration name is required.']);
+            $this->redirect('setup-dns');
+        }
+
+        $_SESSION['setup_pending_dns'] = ['name' => $name, 'provider' => $providerKey];
         $this->redirect('setup-confirm');
     }
 
     /**
-     * Show page 3 of setup: Confirmation review
+     * Show page 4 of setup: Confirmation review
      */
     public function showConfirm(): void
     {
@@ -401,33 +548,49 @@ final class SetupController extends BaseController
             $this->redirect('setup');
         }
 
-        $proxyMode = $_SESSION['setup_pending_proxy_mode'] ?? 'disabled';
+        $proxyIntegration = isset($_SESSION['setup_pending_proxy']) && is_array($_SESSION['setup_pending_proxy'])
+            ? $_SESSION['setup_pending_proxy'] : null;
+        $dnsIntegration = isset($_SESSION['setup_pending_dns']) && is_array($_SESSION['setup_pending_dns'])
+            ? $_SESSION['setup_pending_dns'] : null;
+
+        $providers = IntegrationRegistry::providers();
+        $proxyProviderLabel = 'Not configured';
+        $dnsProviderLabel = 'Not configured';
+        if (is_array($proxyIntegration)) {
+            $proxyProviderKey = (string) ($proxyIntegration['provider'] ?? '');
+            if ($proxyProviderKey !== '' && isset($providers[$proxyProviderKey])) {
+                $proxyProviderLabel = (string) ($providers[$proxyProviderKey]['label'] ?? $proxyProviderKey);
+            }
+        }
+        if (is_array($dnsIntegration)) {
+            $dnsProviderKey = (string) ($dnsIntegration['provider'] ?? '');
+            if ($dnsProviderKey !== '' && isset($providers[$dnsProviderKey])) {
+                $dnsProviderLabel = (string) ($providers[$dnsProviderKey]['label'] ?? $dnsProviderKey);
+            }
+        }
 
         $summary = [
-            'admin_email' => $pendingSetup['ADMIN_USER'] ?? '',
-            'admin_full_name' => $pendingSetup['ADMIN_FULL_NAME'] ?? '',
-            'admin_password' => $_SESSION['setup_pending_admin_password'] ?? '',
-            'app_url' => $pendingSetup['APP_URL'] ?? '',
-            'app_https' => $pendingSetup['APP_HTTPS'] === 'true',
-            'allowed_docroot_bases' => $pendingSetup['ALLOWED_DOCROOT_BASES'] ?? '',
+            'admin_email'          => $pendingSetup['ADMIN_USER'] ?? '',
+            'admin_full_name'      => $pendingSetup['ADMIN_FULL_NAME'] ?? '',
+            'admin_password'       => $_SESSION['setup_pending_admin_password'] ?? '',
+            'app_url'              => $pendingSetup['APP_URL'] ?? '',
+            'app_https'            => ($pendingSetup['APP_HTTPS'] ?? 'false') === 'true',
+            'allowed_docroot_bases'=> $pendingSetup['ALLOWED_DOCROOT_BASES'] ?? '',
             'default_docroot_base' => $pendingSetup['DEFAULT_DOCROOT_BASE'] ?? '',
-            'proxy_mode' => $proxyMode,
-                        'builtin_npm_identity' => $_SESSION['setup_pending_builtin_npm_identity'] ?? '',
-                        'builtin_npm_secret' => $_SESSION['setup_pending_builtin_npm_secret'] ?? '',
-            'npm_base_url' => $_SESSION['setup_pending_npm_base_url'] ?? '',
-            'npm_identity' => $_SESSION['setup_pending_npm_identity'] ?? '',
-            'npm_forward_host' => $_SESSION['setup_pending_npm_forward_host'] ?? '',
-            'npm_forward_port' => $_SESSION['setup_pending_npm_forward_port'] ?? '',
+            'proxy_integration'    => $proxyIntegration,
+            'dns_integration'      => $dnsIntegration,
+            'proxy_provider_label' => $proxyProviderLabel,
+            'dns_provider_label' => $dnsProviderLabel,
         ];
 
         $this->render('auth/setup-confirm.php', [
             'csrfToken' => $this->csrf->token(),
-            'summary' => $summary,
+            'summary'   => $summary,
         ]);
     }
 
     /**
-     * Process page 3: Save all settings and auto-login
+     * Process page 4: Save all settings and auto-login
      */
     public function completeConfirm(): void
     {
@@ -445,9 +608,7 @@ final class SetupController extends BaseController
             $this->redirect('setup');
         }
 
-        $proxyMode = $_SESSION['setup_pending_proxy_mode'] ?? 'disabled';
         $settings = $pendingSetup;
-        $settings['PROXY_MODE'] = $proxyMode;
         if (trim((string) ($settings['ADMIN_CREATED_AT'] ?? '')) === '') {
             $settings['ADMIN_CREATED_AT'] = date('c');
         }
@@ -455,60 +616,84 @@ final class SetupController extends BaseController
             $settings['ADMIN_FULL_NAME'] = (string) ($settings['ADMIN_USER'] ?? 'Admin User');
         }
 
-        if ($proxyMode === 'builtin_npm') {
-            $builtinIdentity = (string) ($_SESSION['setup_pending_builtin_npm_identity'] ?? 'admin@example.com');
-            $builtinSecret = (string) ($_SESSION['setup_pending_builtin_npm_secret'] ?? 'changeme');
-
-            $provisionError = $this->provisionBuiltinNpmCredentials($builtinIdentity, $builtinSecret);
-            if ($provisionError !== null) {
-                Session::setFlash('error', $provisionError);
-                $this->redirect('setup-confirm');
-            }
-
-            try {
-                $serviceAccount = $this->provisionNpmServiceAccount('http://npm:81', $builtinIdentity, $builtinSecret);
-            } catch (RuntimeException $e) {
-                Session::setFlash('error', 'Built-in NPM connected, but VHM account provisioning failed: ' . $e->getMessage());
-                $this->redirect('setup-confirm');
-            }
-
-            $settings['NPM_ENABLED'] = 'true';
-            $settings['NPM_BASE_URL'] = 'http://npm:81';
-            $settings['NPM_IDENTITY'] = $serviceAccount['identity'];
-            $settings['NPM_SECRET'] = $serviceAccount['secret'];
-            $settings['NPM_FORWARD_HOST'] = 'vhost-manager';
-            $settings['NPM_FORWARD_PORT'] = '80';
-        } elseif ($proxyMode === 'external_npm') {
-            $settings['NPM_ENABLED'] = 'true';
-            $settings['NPM_BASE_URL'] = $_SESSION['setup_pending_npm_base_url'] ?? '';
-            $settings['NPM_IDENTITY'] = $_SESSION['setup_pending_npm_identity'] ?? '';
-            $settings['NPM_SECRET'] = $_SESSION['setup_pending_npm_secret'] ?? '';
-            $settings['NPM_FORWARD_HOST'] = $_SESSION['setup_pending_npm_forward_host'] ?? '';
-            $settings['NPM_FORWARD_PORT'] = $_SESSION['setup_pending_npm_forward_port'] ?? '';
-        } else {
-            $settings['NPM_ENABLED'] = 'false';
-        }
+        $proxyIntegration = isset($_SESSION['setup_pending_proxy']) && is_array($_SESSION['setup_pending_proxy'])
+            ? $_SESSION['setup_pending_proxy'] : null;
+        $dnsIntegration = isset($_SESSION['setup_pending_dns']) && is_array($_SESSION['setup_pending_dns'])
+            ? $_SESSION['setup_pending_dns'] : null;
+        $providers = IntegrationRegistry::providers();
 
         try {
             $this->settingsStore->setMany($settings);
+
+            // Write admin to the users table as the primary user.
+            $adminEmail = strtolower(trim((string) ($settings['ADMIN_USER'] ?? '')));
+            if ($adminEmail !== '') {
+                $this->settingsStore->userUpsert([
+                    'email'        => $adminEmail,
+                    'password_hash'=> (string) ($settings['ADMIN_PASSWORD_HASH'] ?? ''),
+                    'full_name'    => (string) ($settings['ADMIN_FULL_NAME'] ?? ''),
+                    'account_type' => 'admin',
+                    'is_primary'   => 1,
+                    'active'       => 1,
+                    'created_at'   => (string) ($settings['ADMIN_CREATED_AT'] ?? date('c')),
+                    'last_login_at'=> '',
+                ]);
+            }
+
+            // Save proxy (NPM) integration to integrations table.
+            if ($proxyIntegration !== null) {
+                $proxyProviderKey = (string) ($proxyIntegration['provider'] ?? '');
+                if ($proxyProviderKey !== '' && isset($providers[$proxyProviderKey])) {
+                    $proxySettings = [];
+                    if ($proxyProviderKey === 'npm' && isset($proxyIntegration['base_url'])) {
+                        $proxySettings = [
+                            'base_url' => (string) ($proxyIntegration['base_url'] ?? ''),
+                            'identity' => (string) ($proxyIntegration['identity'] ?? ''),
+                            'secret' => (string) ($proxyIntegration['secret'] ?? ''),
+                            'forward_host' => (string) ($proxyIntegration['forward_host'] ?? ''),
+                            'forward_port' => (string) ($proxyIntegration['forward_port'] ?? '80'),
+                            'bootstrap_key' => '',
+                        ];
+                    } elseif (is_array($proxyIntegration['settings'] ?? null)) {
+                        $proxySettings = $proxyIntegration['settings'];
+                    }
+
+                $this->settingsStore->integrationUpsert([
+                        'id' => str_replace('.', '', uniqid($proxyProviderKey . '_', true)),
+                        'name' => (string) ($proxyIntegration['name'] ?? $proxyProviderKey),
+                        'provider' => $proxyProviderKey,
+                        'category' => (string) ($providers[$proxyProviderKey]['category'] ?? 'proxy'),
+                        'settings' => $proxySettings,
+                ]);
+                }
+            }
+
+            // Save DNS integration to integrations table.
+            if ($dnsIntegration !== null) {
+                $dnsProviderKey = (string) ($dnsIntegration['provider'] ?? '');
+                if ($dnsProviderKey !== '' && isset($providers[$dnsProviderKey])) {
+                $this->settingsStore->integrationUpsert([
+                        'id' => str_replace('.', '', uniqid($dnsProviderKey . '_', true)),
+                        'name' => (string) ($dnsIntegration['name'] ?? $dnsProviderKey),
+                        'provider' => $dnsProviderKey,
+                        'category' => (string) ($providers[$dnsProviderKey]['category'] ?? 'dns'),
+                    'settings' => [],
+                ]);
+                }
+            }
         } catch (RuntimeException $e) {
             Session::setFlash('error', $e->getMessage());
             $this->redirect('setup-confirm');
         }
 
-        // Clean up setup session data
-        unset($_SESSION['setup_pending']);
-        unset($_SESSION['setup_pending_admin_password']);
-        unset($_SESSION['setup_pending_proxy_mode']);
-            unset($_SESSION['setup_pending_builtin_npm_identity']);
-            unset($_SESSION['setup_pending_builtin_npm_secret']);
-        unset($_SESSION['setup_pending_npm_base_url']);
-        unset($_SESSION['setup_pending_npm_identity']);
-        unset($_SESSION['setup_pending_npm_secret']);
-        unset($_SESSION['setup_pending_npm_forward_host']);
-        unset($_SESSION['setup_pending_npm_forward_port']);
+        // Clean up setup session data.
+        unset(
+            $_SESSION['setup_pending'],
+            $_SESSION['setup_pending_admin_password'],
+            $_SESSION['setup_pending_proxy'],
+            $_SESSION['setup_pending_dns']
+        );
 
-        // Auto-login the user
         $adminEmail = strtolower(trim((string) ($settings['ADMIN_USER'] ?? '')));
         Session::login($adminEmail);
 
@@ -524,17 +709,27 @@ final class SetupController extends BaseController
         return $user !== '' && $hash !== '';
     }
 
-    private function hasBuiltinNpm(): bool
+    /**
+     * @return array<string, array{label:string,description:string,category:string}>
+     */
+    private function setupProvidersByCategory(string $category): array
     {
-        return filter_var(getenv('VHM_BUILTIN_NPM_AVAILABLE') ?: 'false', FILTER_VALIDATE_BOOLEAN);
-    }
+        $providers = IntegrationRegistry::providers();
+        $filtered = [];
 
-    private function consumeExternalNpmTestError(): ?string
-    {
-        $error = $_SESSION['setup_external_npm_test_error'] ?? null;
-        unset($_SESSION['setup_external_npm_test_error']);
+        foreach ($providers as $key => $provider) {
+            if (($provider['category'] ?? '') !== $category) {
+                continue;
+            }
 
-        return is_string($error) && $error !== '' ? $error : null;
+            $filtered[$key] = [
+                'label' => (string) ($provider['label'] ?? $key),
+                'description' => (string) ($provider['description'] ?? ''),
+                'category' => (string) ($provider['category'] ?? ''),
+            ];
+        }
+
+        return $filtered;
     }
 
     private function testExternalNpmConnection(string $baseUrl, string $identity, string $secret): ?string
@@ -557,82 +752,6 @@ final class SetupController extends BaseController
         $body = $result['body'] ?? null;
         if (!is_array($body) || trim((string) ($body['token'] ?? '')) === '') {
             return 'Authentication token was not returned by NPM.';
-        }
-
-        return null;
-    }
-
-    private function provisionBuiltinNpmCredentials(string $identity, string $secret): ?string
-    {
-        $baseUrl = 'http://npm:81';
-        $bootstrapIdentity = trim((string) (getenv('VHM_NPM_BOOTSTRAP_IDENTITY') ?: 'admin@example.com'));
-        $bootstrapSecret = (string) (getenv('VHM_NPM_BOOTSTRAP_SECRET') ?: 'changeme');
-
-        // If the target credentials already work, there is nothing to change.
-        if ($this->requestNpmToken($baseUrl, $identity, $secret) !== null) {
-            return null;
-        }
-
-        // Fresh NPM without any user can accept unauthenticated setup user creation.
-        if ($this->tryCreateBuiltinNpmSetupUser($baseUrl, $identity, $secret)) {
-            if ($this->requestNpmToken($baseUrl, $identity, $secret) !== null) {
-                return null;
-            }
-
-            return 'Built-in NPM setup user was created, but login verification failed afterwards.';
-        }
-
-        // Fresh NPM installs usually start with the configured bootstrap login.
-        $bootstrapToken = $this->requestNpmToken($baseUrl, $bootstrapIdentity, $bootstrapSecret);
-        if ($bootstrapToken === null) {
-            return 'Built-in NPM is reachable, but Vhost Manager could not authenticate to apply the selected credentials. If this is an existing NPM instance, enter its current admin login and password in setup first.';
-        }
-
-        $authHeader = ["Authorization: Bearer {$bootstrapToken}"];
-
-        try {
-            $meResponse = $this->httpClient->get(rtrim($baseUrl, '/') . '/api/users/me', $authHeader);
-            if ((int) ($meResponse['status'] ?? 0) !== 200 || !is_array($meResponse['body'] ?? null)) {
-                return 'Built-in NPM user profile could not be loaded while applying credentials.';
-            }
-
-            $me = $meResponse['body'];
-            $name = trim((string) ($me['name'] ?? ''));
-            $nickname = trim((string) ($me['nickname'] ?? ''));
-
-            $updateUserResponse = $this->httpClient->put(
-                rtrim($baseUrl, '/') . '/api/users/me',
-                [
-                    'name' => $name !== '' ? $name : 'Vhost Manager Admin',
-                    'nickname' => $nickname !== '' ? $nickname : 'admin',
-                    'email' => $identity,
-                ],
-                $authHeader
-            );
-
-            if (!in_array((int) ($updateUserResponse['status'] ?? 0), [200, 201], true)) {
-                return 'Built-in NPM admin email could not be updated during setup.';
-            }
-
-            $updatePasswordResponse = $this->httpClient->put(
-                rtrim($baseUrl, '/') . '/api/users/me/auth',
-                [
-                    'type' => 'password',
-                    'current' => $bootstrapSecret,
-                    'secret' => $secret,
-                ],
-                $authHeader
-            );
-
-            if (!in_array((int) ($updatePasswordResponse['status'] ?? 0), [200, 201], true)) {
-                return 'Built-in NPM admin password could not be updated during setup.';
-            }
-        } catch (RuntimeException $e) {
-            return 'Built-in NPM credentials could not be applied: ' . $e->getMessage();
-        }
-
-        if ($this->requestNpmToken($baseUrl, $identity, $secret) === null) {
-            return 'Built-in NPM credentials were updated, but login verification failed afterwards. Please verify NPM admin credentials manually.';
         }
 
         return null;
@@ -910,14 +1029,8 @@ final class SetupController extends BaseController
 
     private function buildNpmServiceIdentity(string $email): string
     {
-        $localPart = strtolower(trim((string) strtok($email, '@')));
-        $localPart = preg_replace('/[^a-z0-9._-]/', '', $localPart);
-        $localPart = is_string($localPart) ? trim($localPart, '._-') : '';
+        unset($email);
 
-        if ($localPart === '') {
-            $localPart = 'vhm';
-        }
-
-        return $localPart . '@vhost-manager.npm';
+        return strtolower(bin2hex(random_bytes(3))) . '@vhost-manager.npm';
     }
 }

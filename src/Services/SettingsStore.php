@@ -27,6 +27,59 @@ final class SettingsStore
                 updated_at TEXT NOT NULL
             )'
         );
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS users (
+                email TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL DEFAULT \'\',
+                full_name TEXT NOT NULL DEFAULT \'\',
+                account_type TEXT NOT NULL DEFAULT \'user\',
+                is_primary INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT \'\',
+                last_login_at TEXT NOT NULL DEFAULT \'\',
+                updated_at TEXT NOT NULL DEFAULT \'\'
+            )'
+        );
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS integrations (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT \'\',
+                provider TEXT NOT NULL DEFAULT \'\',
+                category TEXT NOT NULL DEFAULT \'\',
+                settings_json TEXT NOT NULL DEFAULT \'{}\',
+                created_at TEXT NOT NULL DEFAULT \'\',
+                updated_at TEXT NOT NULL DEFAULT \'\'
+            )'
+        );
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS domains (
+                domain TEXT PRIMARY KEY,
+                cf_zone_id TEXT NOT NULL DEFAULT \'\',
+                cf_api_token TEXT NOT NULL DEFAULT \'\',
+                cf_record_ip TEXT NOT NULL DEFAULT \'\',
+                cf_proxied INTEGER NOT NULL DEFAULT 0,
+                cf_ttl INTEGER NOT NULL DEFAULT 120,
+                updated_at TEXT NOT NULL DEFAULT \'\'
+            )'
+        );
+
+        $this->runMigrations();
+    }
+
+    // =========================================================================
+    // General key-value methods
+    // =========================================================================
+
+    public function get(string $key, ?string $default = null): ?string
+    {
+        $stmt = $this->pdo()->prepare('SELECT value FROM app_settings WHERE key = :key');
+        $stmt->execute([':key' => $key]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $row !== false ? (string) $row['value'] : $default;
     }
 
     /**
@@ -113,6 +166,32 @@ final class SettingsStore
     }
 
     /**
+     * @param list<string> $keys
+     */
+    public function deleteKeys(array $keys): void
+    {
+        $normalized = [];
+        foreach ($keys as $key) {
+            $k = trim((string) $key);
+            if ($k !== '') {
+                $normalized[] = $k;
+            }
+        }
+
+        if ($normalized === []) {
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($normalized), '?'));
+        $stmt = $this->pdo()->prepare('DELETE FROM app_settings WHERE key IN (' . $placeholders . ')');
+        if ($stmt === false) {
+            throw new RuntimeException('Failed to prepare SQLite settings delete statement.');
+        }
+
+        $stmt->execute($normalized);
+    }
+
+    /**
      * @param array<string, mixed> $envValues
      * @param list<string> $keys
      */
@@ -146,6 +225,552 @@ final class SettingsStore
 
         if ($toInsert !== []) {
             $this->setMany($toInsert);
+        }
+    }
+
+    // =========================================================================
+    // Users table
+    // =========================================================================
+
+    /**
+     * @return list<array{email:string,password_hash:string,full_name:string,account_type:string,is_primary:bool,active:bool,created_at:string,last_login_at:string,updated_at:string}>
+     */
+    public function userGetAll(): array
+    {
+        $stmt = $this->pdo()->query('SELECT * FROM users ORDER BY is_primary DESC, email ASC');
+        if ($stmt === false) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $rows[] = $this->hydrateUser($row);
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @return array{email:string,password_hash:string,full_name:string,account_type:string,is_primary:bool,active:bool,created_at:string,last_login_at:string,updated_at:string}|null
+     */
+    public function userGetPrimary(): ?array
+    {
+        $stmt = $this->pdo()->prepare('SELECT * FROM users WHERE is_primary = 1 LIMIT 1');
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $row !== false ? $this->hydrateUser($row) : null;
+    }
+
+    /**
+     * @return array{email:string,password_hash:string,full_name:string,account_type:string,is_primary:bool,active:bool,created_at:string,last_login_at:string,updated_at:string}|null
+     */
+    public function userGet(string $email): ?array
+    {
+        $stmt = $this->pdo()->prepare('SELECT * FROM users WHERE email = :email');
+        $stmt->execute([':email' => strtolower(trim($email))]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $row !== false ? $this->hydrateUser($row) : null;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    public function userUpsert(array $data): void
+    {
+        $email = strtolower(trim((string) ($data['email'] ?? '')));
+        if ($email === '') {
+            throw new RuntimeException('User email is required.');
+        }
+
+        $now = date('c');
+        $existing = $this->userGet($email);
+
+        $stmt = $this->pdo()->prepare(
+            'INSERT INTO users (email, password_hash, full_name, account_type, is_primary, active, created_at, last_login_at, updated_at)
+             VALUES (:email, :password_hash, :full_name, :account_type, :is_primary, :active, :created_at, :last_login_at, :updated_at)
+             ON CONFLICT(email) DO UPDATE SET
+                password_hash = CASE WHEN excluded.password_hash != \'\' THEN excluded.password_hash ELSE password_hash END,
+                full_name = excluded.full_name,
+                account_type = excluded.account_type,
+                is_primary = excluded.is_primary,
+                active = excluded.active,
+                last_login_at = excluded.last_login_at,
+                updated_at = excluded.updated_at'
+        );
+
+        $newHash = (string) ($data['password_hash'] ?? '');
+        $stmt->execute([
+            ':email' => $email,
+            ':password_hash' => $newHash !== '' ? $newHash : (string) ($existing['password_hash'] ?? ''),
+            ':full_name' => (string) ($data['full_name'] ?? ($existing['full_name'] ?? '')),
+            ':account_type' => (string) ($data['account_type'] ?? ($existing['account_type'] ?? 'user')),
+            ':is_primary' => (int) ($data['is_primary'] ?? ($existing['is_primary'] ?? false)),
+            ':active' => isset($data['active']) ? (int) ((bool) $data['active']) : (int) ($existing['active'] ?? true),
+            ':created_at' => (string) ($data['created_at'] ?? ($existing['created_at'] ?? $now)),
+            ':last_login_at' => (string) ($data['last_login_at'] ?? ($existing['last_login_at'] ?? '')),
+            ':updated_at' => $now,
+        ]);
+    }
+
+    public function userDelete(string $email): void
+    {
+        $stmt = $this->pdo()->prepare('DELETE FROM users WHERE email = :email AND is_primary = 0');
+        $stmt->execute([':email' => strtolower(trim($email))]);
+    }
+
+    public function userUpdateEmail(string $oldEmail, string $newEmail): void
+    {
+        $stmt = $this->pdo()->prepare(
+            'UPDATE users SET email = :new_email, updated_at = :now WHERE email = :old_email'
+        );
+        $stmt->execute([
+            ':new_email' => strtolower(trim($newEmail)),
+            ':old_email' => strtolower(trim($oldEmail)),
+            ':now' => date('c'),
+        ]);
+    }
+
+    // =========================================================================
+    // Integrations table
+    // =========================================================================
+
+    /**
+     * @return list<array{id:string,name:string,provider:string,category:string,settings:array<string,mixed>,created_at:string,updated_at:string}>
+     */
+    public function integrationGetAll(): array
+    {
+        $stmt = $this->pdo()->query('SELECT * FROM integrations ORDER BY category ASC, name ASC');
+        if ($stmt === false) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $rows[] = $this->hydrateIntegration($row);
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @return array{id:string,name:string,provider:string,category:string,settings:array<string,mixed>,created_at:string,updated_at:string}|null
+     */
+    public function integrationGet(string $id): ?array
+    {
+        $stmt = $this->pdo()->prepare('SELECT * FROM integrations WHERE id = :id');
+        $stmt->execute([':id' => $id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $row !== false ? $this->hydrateIntegration($row) : null;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    public function integrationUpsert(array $data): void
+    {
+        $id = trim((string) ($data['id'] ?? ''));
+        if ($id === '') {
+            throw new RuntimeException('Integration ID is required.');
+        }
+
+        $now = date('c');
+        $existing = $this->integrationGet($id);
+
+        $settings = $data['settings'] ?? ($existing['settings'] ?? []);
+        if (!is_array($settings)) {
+            $settings = [];
+        }
+
+        $stmt = $this->pdo()->prepare(
+            'INSERT INTO integrations (id, name, provider, category, settings_json, created_at, updated_at)
+             VALUES (:id, :name, :provider, :category, :settings_json, :created_at, :updated_at)
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                provider = excluded.provider,
+                category = excluded.category,
+                settings_json = excluded.settings_json,
+                updated_at = excluded.updated_at'
+        );
+
+        $stmt->execute([
+            ':id' => $id,
+            ':name' => (string) ($data['name'] ?? ($existing['name'] ?? '')),
+            ':provider' => (string) ($data['provider'] ?? ($existing['provider'] ?? '')),
+            ':category' => (string) ($data['category'] ?? ($existing['category'] ?? '')),
+            ':settings_json' => json_encode($settings, JSON_UNESCAPED_SLASHES) ?: '{}',
+            ':created_at' => $existing !== null ? ($existing['created_at'] ?? $now) : $now,
+            ':updated_at' => $now,
+        ]);
+    }
+
+    public function integrationDelete(string $id): void
+    {
+        $stmt = $this->pdo()->prepare('DELETE FROM integrations WHERE id = :id');
+        $stmt->execute([':id' => $id]);
+    }
+
+    // =========================================================================
+    // Domains table
+    // =========================================================================
+
+    /**
+     * @return list<array{domain:string,updated_at:string,cloudflare?:array{zone_id:string,api_token:string,record_ip:string,proxied:bool,ttl:int}}>
+     */
+    public function domainGetAll(): array
+    {
+        $stmt = $this->pdo()->query('SELECT * FROM domains ORDER BY domain ASC');
+        if ($stmt === false) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $rows[] = $this->hydrateDomain($row);
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @return array{domain:string,updated_at:string,cloudflare?:array{zone_id:string,api_token:string,record_ip:string,proxied:bool,ttl:int}}|null
+     */
+    public function domainGet(string $domain): ?array
+    {
+        $stmt = $this->pdo()->prepare('SELECT * FROM domains WHERE domain = :domain');
+        $stmt->execute([':domain' => strtolower(trim($domain))]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $row !== false ? $this->hydrateDomain($row) : null;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    public function domainUpsert(array $data): void
+    {
+        $domain = strtolower(trim((string) ($data['domain'] ?? '')));
+        if ($domain === '') {
+            throw new RuntimeException('Domain is required.');
+        }
+
+        $stmt = $this->pdo()->prepare(
+            'INSERT INTO domains (domain, cf_zone_id, cf_api_token, cf_record_ip, cf_proxied, cf_ttl, updated_at)
+             VALUES (:domain, :cf_zone_id, :cf_api_token, :cf_record_ip, :cf_proxied, :cf_ttl, :updated_at)
+             ON CONFLICT(domain) DO UPDATE SET
+                cf_zone_id = excluded.cf_zone_id,
+                cf_api_token = excluded.cf_api_token,
+                cf_record_ip = excluded.cf_record_ip,
+                cf_proxied = excluded.cf_proxied,
+                cf_ttl = excluded.cf_ttl,
+                updated_at = excluded.updated_at'
+        );
+
+        $stmt->execute([
+            ':domain' => $domain,
+            ':cf_zone_id' => (string) ($data['cf_zone_id'] ?? ''),
+            ':cf_api_token' => (string) ($data['cf_api_token'] ?? ''),
+            ':cf_record_ip' => (string) ($data['cf_record_ip'] ?? ''),
+            ':cf_proxied' => (int) (bool) ($data['cf_proxied'] ?? false),
+            ':cf_ttl' => max(1, (int) ($data['cf_ttl'] ?? 120)),
+            ':updated_at' => date('c'),
+        ]);
+    }
+
+    public function domainDelete(string $domain): void
+    {
+        $stmt = $this->pdo()->prepare('DELETE FROM domains WHERE domain = :domain');
+        $stmt->execute([':domain' => strtolower(trim($domain))]);
+    }
+
+    /**
+     * Returns CF domain mappings in the format expected by CloudflareService.
+     * @return list<array{domain:string,zone_id:string,api_token:string}>
+     */
+    public function domainGetCfMappings(): array
+    {
+        $stmt = $this->pdo()->query(
+            "SELECT domain, cf_zone_id AS zone_id, cf_api_token AS api_token FROM domains
+             WHERE cf_zone_id != '' AND cf_api_token != '' ORDER BY domain ASC"
+        );
+        if ($stmt === false) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $rows[] = [
+                'domain' => (string) $row['domain'],
+                'zone_id' => (string) $row['zone_id'],
+                'api_token' => (string) $row['api_token'],
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Syncs CF_DOMAINS_JSON in app_settings from the domains table.
+     * Required for CloudflareService which reads CF_DOMAINS_JSON via Config.
+     */
+    public function syncCfDomainsJson(): void
+    {
+        $mappings = $this->domainGetCfMappings();
+        $this->setMany([
+            'CF_DOMAINS_JSON' => json_encode($mappings, JSON_UNESCAPED_SLASHES) ?: '[]',
+        ]);
+    }
+
+    // =========================================================================
+    // Private helpers
+    // =========================================================================
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array{email:string,password_hash:string,full_name:string,account_type:string,is_primary:bool,active:bool,created_at:string,last_login_at:string,updated_at:string}
+     */
+    private function hydrateUser(array $row): array
+    {
+        return [
+            'email' => (string) $row['email'],
+            'password_hash' => (string) $row['password_hash'],
+            'full_name' => (string) $row['full_name'],
+            'account_type' => (string) $row['account_type'],
+            'is_primary' => (bool) $row['is_primary'],
+            'active' => (bool) $row['active'],
+            'created_at' => (string) $row['created_at'],
+            'last_login_at' => (string) $row['last_login_at'],
+            'updated_at' => (string) $row['updated_at'],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array{id:string,name:string,provider:string,category:string,settings:array<string,mixed>,created_at:string,updated_at:string}
+     */
+    private function hydrateIntegration(array $row): array
+    {
+        $settings = [];
+        $settingsJson = (string) ($row['settings_json'] ?? '{}');
+        if ($settingsJson !== '') {
+            $decoded = json_decode($settingsJson, true);
+            if (is_array($decoded)) {
+                $settings = $decoded;
+            }
+        }
+
+        return [
+            'id' => (string) $row['id'],
+            'name' => (string) $row['name'],
+            'provider' => (string) $row['provider'],
+            'category' => (string) $row['category'],
+            'settings' => $settings,
+            'created_at' => (string) $row['created_at'],
+            'updated_at' => (string) $row['updated_at'],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array{domain:string,updated_at:string,cloudflare?:array{zone_id:string,api_token:string,record_ip:string,proxied:bool,ttl:int}}
+     */
+    private function hydrateDomain(array $row): array
+    {
+        $cfZoneId = (string) ($row['cf_zone_id'] ?? '');
+        $cfApiToken = (string) ($row['cf_api_token'] ?? '');
+
+        $result = [
+            'domain' => (string) $row['domain'],
+            'updated_at' => (string) $row['updated_at'],
+        ];
+
+        if ($cfZoneId !== '' || $cfApiToken !== '') {
+            $result['cloudflare'] = [
+                'zone_id' => $cfZoneId,
+                'api_token' => $cfApiToken,
+                'record_ip' => (string) ($row['cf_record_ip'] ?? ''),
+                'proxied' => (bool) ($row['cf_proxied'] ?? false),
+                'ttl' => max(1, (int) ($row['cf_ttl'] ?? 120)),
+            ];
+        }
+
+        return $result;
+    }
+
+    // =========================================================================
+    // Migrations
+    // =========================================================================
+
+    private function runMigrations(): void
+    {
+        $done = $this->get('_schema_v2_migrated');
+        if ($done !== null) {
+            return;
+        }
+
+        $this->migrateLegacyUsers();
+        $this->migrateLegacyIntegrations();
+        $this->migrateLegacyDomains();
+
+        $this->setMany(['_schema_v2_migrated' => date('c')]);
+    }
+
+    private function migrateLegacyUsers(): void
+    {
+        $adminEmail = strtolower(trim((string) ($this->get('ADMIN_USER') ?? '')));
+        if ($adminEmail !== '' && $this->userGet($adminEmail) === null) {
+            $this->userUpsert([
+                'email' => $adminEmail,
+                'password_hash' => (string) ($this->get('ADMIN_PASSWORD_HASH') ?? ''),
+                'full_name' => (string) ($this->get('ADMIN_FULL_NAME') ?? ''),
+                'account_type' => 'admin',
+                'is_primary' => 1,
+                'active' => 1,
+                'created_at' => (string) ($this->get('ADMIN_CREATED_AT') ?? date('c')),
+                'last_login_at' => (string) ($this->get('ADMIN_LAST_LOGIN_AT') ?? ''),
+            ]);
+        }
+
+        $usersRaw = (string) ($this->get('USERS_JSON') ?? '');
+        $metaRaw = (string) ($this->get('USERS_META_JSON') ?? '');
+
+        $users = [];
+        if ($usersRaw !== '') {
+            $decoded = json_decode($usersRaw, true);
+            if (is_array($decoded)) {
+                $users = $decoded;
+            }
+        }
+
+        $meta = [];
+        if ($metaRaw !== '') {
+            $decoded = json_decode($metaRaw, true);
+            if (is_array($decoded)) {
+                $meta = $decoded;
+            }
+        }
+
+        foreach ($users as $email => $hash) {
+            $email = strtolower(trim((string) $email));
+            if ($email === '' || $email === $adminEmail || $this->userGet($email) !== null) {
+                continue;
+            }
+
+            $userMeta = is_array($meta[$email] ?? null) ? $meta[$email] : [];
+            $this->userUpsert([
+                'email' => $email,
+                'password_hash' => (string) $hash,
+                'full_name' => (string) ($userMeta['full_name'] ?? ''),
+                'account_type' => (string) ($userMeta['account_type'] ?? 'user'),
+                'is_primary' => 0,
+                'active' => !array_key_exists('active', $userMeta) || (bool) $userMeta['active'],
+                'created_at' => (string) ($userMeta['created_at'] ?? date('c')),
+                'last_login_at' => (string) ($userMeta['last_login_at'] ?? ''),
+            ]);
+        }
+    }
+
+    private function migrateLegacyIntegrations(): void
+    {
+        $raw = (string) ($this->get('INTEGRATIONS_JSON') ?? '');
+        if ($raw === '') {
+            return;
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return;
+        }
+
+        foreach ($decoded as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $id = trim((string) ($entry['id'] ?? ''));
+            if ($id === '' || $this->integrationGet($id) !== null) {
+                continue;
+            }
+
+            $this->integrationUpsert([
+                'id' => $id,
+                'name' => (string) ($entry['name'] ?? ''),
+                'provider' => (string) ($entry['provider'] ?? ''),
+                'category' => (string) ($entry['category'] ?? ''),
+                'settings' => is_array($entry['settings'] ?? null) ? $entry['settings'] : [],
+                'created_at' => date('c'),
+            ]);
+        }
+    }
+
+    private function migrateLegacyDomains(): void
+    {
+        $domainsRaw = (string) ($this->get('DOMAINS_JSON') ?? '');
+        $cfDomainsRaw = (string) ($this->get('CF_DOMAINS_JSON') ?? '');
+
+        $domainRecords = [];
+
+        if ($domainsRaw !== '' && $domainsRaw !== '[]') {
+            $decoded = json_decode($domainsRaw, true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $entry) {
+                    if (is_string($entry)) {
+                        $d = strtolower(trim($entry));
+                        if ($d !== '') {
+                            $domainRecords[$d] = ['domain' => $d, 'cf_zone_id' => '', 'cf_api_token' => '', 'cf_record_ip' => '', 'cf_proxied' => false, 'cf_ttl' => 120];
+                        }
+                        continue;
+                    }
+                    if (!is_array($entry)) {
+                        continue;
+                    }
+                    $d = strtolower(trim((string) ($entry['domain'] ?? '')));
+                    if ($d === '') {
+                        continue;
+                    }
+                    $cf = is_array($entry['cloudflare'] ?? null) ? $entry['cloudflare'] : [];
+                    $domainRecords[$d] = [
+                        'domain' => $d,
+                        'cf_zone_id' => (string) ($cf['zone_id'] ?? ''),
+                        'cf_api_token' => (string) ($cf['api_token'] ?? ''),
+                        'cf_record_ip' => (string) ($cf['record_ip'] ?? ''),
+                        'cf_proxied' => !empty($cf['proxied']),
+                        'cf_ttl' => max(1, (int) ($cf['ttl'] ?? 120)),
+                    ];
+                }
+            }
+        }
+
+        if ($cfDomainsRaw !== '' && $cfDomainsRaw !== '[]') {
+            $decoded = json_decode($cfDomainsRaw, true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $entry) {
+                    if (!is_array($entry)) {
+                        continue;
+                    }
+                    $d = strtolower(trim((string) ($entry['domain'] ?? '')));
+                    if ($d === '') {
+                        continue;
+                    }
+                    if (!isset($domainRecords[$d])) {
+                        $domainRecords[$d] = ['domain' => $d, 'cf_zone_id' => '', 'cf_api_token' => '', 'cf_record_ip' => '', 'cf_proxied' => false, 'cf_ttl' => 120];
+                    }
+                    if ((string) ($entry['zone_id'] ?? '') !== '') {
+                        $domainRecords[$d]['cf_zone_id'] = (string) $entry['zone_id'];
+                    }
+                    if ((string) ($entry['api_token'] ?? '') !== '') {
+                        $domainRecords[$d]['cf_api_token'] = (string) $entry['api_token'];
+                    }
+                }
+            }
+        }
+
+        foreach ($domainRecords as $record) {
+            if ($this->domainGet($record['domain']) === null) {
+                $this->domainUpsert($record);
+            }
         }
     }
 

@@ -17,9 +17,9 @@ final class AuthController extends BaseController
         Config $config,
         private readonly AuthService $authService,
         private readonly Csrf $csrf,
-        private readonly SettingsStore $settingsStore
+        SettingsStore $settingsStore
     ) {
-        parent::__construct($config);
+        parent::__construct($config, $settingsStore);
     }
 
     public function showLogin(): void

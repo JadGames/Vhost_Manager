@@ -7,14 +7,16 @@ namespace App\Controllers;
 use App\Core\Config;
 use App\Core\Session;
 use App\Security\Csrf;
+use App\Services\SettingsStore;
 
 final class LogsController extends BaseController
 {
     public function __construct(
         Config $config,
-        private readonly Csrf $csrf
+        private readonly Csrf $csrf,
+        SettingsStore $settingsStore
     ) {
-        parent::__construct($config);
+        parent::__construct($config, $settingsStore);
     }
 
     public function show(): void

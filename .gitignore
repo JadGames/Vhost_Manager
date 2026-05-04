@@ -2,6 +2,13 @@
 storage/logs/*.log
 storage/data/*.json
 storage/data/*.sqlite
+storage/data/*.sqlite*
+storage/data/*.db
+storage/data/*.db*
+*.sqlite
+*.sqlite*
+*.db
+*.db*
 TODO.md
 # Development only
 reset-to-fresh-install.sh

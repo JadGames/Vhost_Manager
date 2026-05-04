@@ -84,6 +84,35 @@ if ($missingDefaults !== []) {
     $currentSettings = array_merge($currentSettings, $missingDefaults);
 }
 
+$legacyIntegrationKeys = [
+    'CF_ENABLED',
+    'CF_API_TOKEN',
+    'CF_ZONE_ID',
+    'CF_RECORD_IP',
+    'CF_PROXIED',
+    'CF_TTL',
+    'NPM_ENABLED',
+    'NPM_BASE_URL',
+    'NPM_IDENTITY',
+    'NPM_SECRET',
+    'NPM_FORWARD_HOST',
+    'NPM_FORWARD_PORT',
+    'NPM_SSL_ENABLED',
+    'NPM_CERTIFICATE_ID',
+    'NPM_SSL_FORCED',
+    'NPM_HTTP2_SUPPORT',
+    'NPM_HSTS_ENABLED',
+    'NPM_HSTS_SUBDOMAINS',
+    'PROXY_MODE',
+    'INTEGRATIONS_JSON',
+];
+
+$settingsStore->deleteKeys($legacyIntegrationKeys);
+foreach ($legacyIntegrationKeys as $legacyKey) {
+    unset($currentSettings[$legacyKey]);
+}
+unset($legacyKey);
+
 $config = new Config(array_merge($defaultSettings, $currentSettings));
 
 $timezone = (string) $config->get('APP_TIMEZONE', 'Australia/Brisbane');
@@ -109,18 +138,54 @@ $rateLimiter = new RateLimiter(
     900,
     900
 );
-$authService = new AuthService($config, $rateLimiter, $logger, $settingsStore);
+$authService = new AuthService($rateLimiter, $logger, $settingsStore);
 $vhostRepository = new VhostRepository(
+    $config->get('SETTINGS_DB_FILE', __DIR__ . '/../storage/data/settings.sqlite'),
     $config->get('MANAGED_VHOSTS_FILE', __DIR__ . '/../storage/data/vhosts.json')
 );
+$vhostRepository->initialize();
 
 $httpClient = new HttpClient($config->getBool('CURL_VERIFY_SSL', true));
-$cloudflare = $config->getBool('CF_ENABLED', false)
-    ? new CloudflareService($config, $httpClient, $logger)
-    : null;
-$npm = $config->getBool('NPM_ENABLED', false)
-    ? new NpmService($config, $httpClient, $logger)
-    : null;
+
+// Wire NpmService and CloudflareService from integrations table
+$allIntegrations = $settingsStore->integrationGetAll();
+$npmIntegration = null;
+$cfIntegration = null;
+foreach ($allIntegrations as $_int) {
+    if ($npmIntegration === null && ($_int['provider'] ?? '') === 'npm') {
+        $npmIntegration = $_int;
+    }
+    if ($cfIntegration === null && ($_int['provider'] ?? '') === 'cloudflare') {
+        $cfIntegration = $_int;
+    }
+}
+unset($_int);
+
+$npm = null;
+if ($npmIntegration !== null) {
+    $ns = $npmIntegration['settings'] ?? [];
+    $npmConfig = new Config(array_merge($currentSettings, [
+        'NPM_ENABLED'        => 'true',
+        'NPM_BASE_URL'       => (string) ($ns['base_url']      ?? 'http://localhost:81'),
+        'NPM_IDENTITY'       => (string) ($ns['identity']      ?? ''),
+        'NPM_SECRET'         => (string) ($ns['secret']        ?? ''),
+        'NPM_FORWARD_HOST'   => (string) ($ns['forward_host']  ?? '127.0.0.1'),
+        'NPM_FORWARD_PORT'   => (string) ($ns['forward_port']  ?? '80'),
+        'NPM_SSL_ENABLED'    => 'false',
+        'NPM_CERTIFICATE_ID' => '0',
+        'NPM_SSL_FORCED'     => 'false',
+        'NPM_HTTP2_SUPPORT'  => 'false',
+        'NPM_HSTS_ENABLED'   => 'false',
+        'NPM_HSTS_SUBDOMAINS'=> 'false',
+    ]));
+    $npm = new NpmService($npmConfig, $httpClient, $logger);
+}
+
+$cloudflare = null;
+if ($cfIntegration !== null) {
+    $cfConfig = new Config(array_merge($currentSettings, ['CF_ENABLED' => 'true']));
+    $cloudflare = new CloudflareService($cfConfig, $httpClient, $logger);
+}
 
 $vhostService = new VhostService($config, $logger, $vhostRepository, $cloudflare, $npm);
  $apacheModulesService = new ApacheModulesService($config);
@@ -129,7 +194,7 @@ $authController = new AuthController($config, $authService, $csrf, $settingsStor
 $setupController = new SetupController($config, $csrf, $settingsStore, $httpClient);
 $vhostController = new VhostController($config, $csrf, $vhostService, $apacheModulesService, $settingsStore);
 $settingsController = new SettingsController($config, $csrf, $settingsStore, $apacheModulesService, $httpClient);
-$logsController = new LogsController($config, $csrf);
+$logsController = new LogsController($config, $csrf, $settingsStore);
 
 $route = $_GET['route'] ?? 'overview';
 $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
@@ -137,12 +202,14 @@ $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
 $isSetupComplete = trim((string) $config->get('ADMIN_USER', '')) !== ''
     && trim((string) $config->get('ADMIN_PASSWORD_HASH', '')) !== '';
 
-if (!$isSetupComplete && !in_array($route, ['setup', 'setup-integration', 'setup-confirm'], true)) {
+$setupRoutes = ['setup', 'setup-proxy', 'setup-dns', 'setup-confirm'];
+
+if (!$isSetupComplete && !in_array($route, $setupRoutes, true)) {
     header('Location: /?route=setup');
     exit;
 }
 
-if ($isSetupComplete && in_array($route, ['setup', 'setup-integration', 'setup-confirm'], true)) {
+if ($isSetupComplete && in_array($route, $setupRoutes, true)) {
     header('Location: /?route=login');
     exit;
 }
@@ -157,12 +224,20 @@ try {
             $setupController->show();
             break;
 
-        case 'setup-integration':
+        case 'setup-proxy':
             if ($method === 'POST') {
-                $setupController->completeIntegration();
+                $setupController->completeProxy();
                 break;
             }
-            $setupController->showIntegration();
+            $setupController->showProxy();
+            break;
+
+        case 'setup-dns':
+            if ($method === 'POST') {
+                $setupController->completeDns();
+                break;
+            }
+            $setupController->showDns();
             break;
 
         case 'setup-confirm':
@@ -266,6 +341,16 @@ try {
             Session::requireAuth();
             if ($method === 'POST') {
                 $settingsController->integrationsTestAction();
+                break;
+            }
+            header('Location: /?route=settings-integrations');
+            exit;
+            break;
+
+        case 'settings-integrations-cloudflare-domain-test':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $settingsController->integrationsCloudflareDomainTestAction();
                 break;
             }
             header('Location: /?route=settings-integrations');

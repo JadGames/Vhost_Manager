@@ -19,9 +19,9 @@ final class VhostController extends BaseController
         private readonly Csrf $csrf,
         private readonly VhostService $service,
         private readonly ApacheModulesService $apacheModules,
-        private readonly SettingsStore $settingsStore
+        SettingsStore $settingsStore
     ) {
-        parent::__construct($config);
+        parent::__construct($config, $settingsStore);
     }
 
     public function showOverview(): void
@@ -57,7 +57,7 @@ final class VhostController extends BaseController
     {
         $this->render('domains/index.php', [
             'csrfToken' => $this->csrf->token(),
-            'cfEnabled' => $this->config->getBool('CF_ENABLED', false),
+            'cfEnabled' => $this->hasProviderIntegration('cloudflare'),
             'domains' => $this->domainsFromStore(),
         ]);
     }
@@ -75,18 +75,12 @@ final class VhostController extends BaseController
             $this->redirect('domains');
         }
 
-        $domains = $this->domainsFromStore();
-        $domains = array_values(array_filter(
-            $domains,
-            static fn (array $row): bool => strtolower((string) ($row['domain'] ?? '')) !== $domain
-        ));
-
-        $record = [
+        $domainData = [
             'domain' => $domain,
             'updated_at' => date('c'),
         ];
 
-        if ($this->config->getBool('CF_ENABLED', false)) {
+        if ($this->hasProviderIntegration('cloudflare')) {
             $zoneId = trim((string) ($_POST['cf_zone_id'] ?? ''));
             $apiToken = trim((string) ($_POST['cf_api_token'] ?? ''));
             $recordIp = trim((string) ($_POST['cf_record_ip'] ?? ''));
@@ -113,23 +107,15 @@ final class VhostController extends BaseController
                 $this->redirect('domains');
             }
 
-            $record['cloudflare'] = [
-                'zone_id' => $zoneId,
-                'api_token' => $apiToken,
-                'record_ip' => $recordIp,
-                'proxied' => $proxied,
-                'ttl' => $ttl,
-            ];
-
-            $this->upsertCloudflareDomainMapping($domain, $zoneId, $apiToken);
+            $domainData['cf_zone_id'] = $zoneId;
+            $domainData['cf_api_token'] = $apiToken;
+            $domainData['cf_record_ip'] = $recordIp;
+            $domainData['cf_proxied'] = $proxied ? 1 : 0;
+            $domainData['cf_ttl'] = $ttl;
         }
 
-        $domains[] = $record;
-        usort($domains, static fn (array $a, array $b): int => strcasecmp((string) ($a['domain'] ?? ''), (string) ($b['domain'] ?? '')));
-
-        $this->settingsStore->setMany([
-            'DOMAINS_JSON' => json_encode($domains, JSON_UNESCAPED_SLASHES) ?: '[]',
-        ]);
+        $this->settingsStore->domainUpsert($domainData);
+        $this->settingsStore->syncCfDomainsJson();
 
         Session::setFlash('success', 'Domain settings saved.');
         $this->redirect('domains');
@@ -146,22 +132,26 @@ final class VhostController extends BaseController
 
     public function showCreateForm(): void
     {
+        $cfEnabled = $this->hasProviderIntegration('cloudflare');
+        $npmEnabled = $this->hasProviderIntegration('npm');
+        $npmDefaults = $this->firstProviderSettings('npm');
+
         $this->render('vhosts/create.php', [
             'csrfToken'      => $this->csrf->token(),
             'defaultBase'    => $this->config->get('DEFAULT_DOCROOT_BASE', '/var/www'),
             'allowedDocrootBases' => $this->allowedDocrootBases(),
             'baseDomain'     => strtolower(trim((string) $this->config->get('VHOST_BASE_DOMAIN', ''))),
-            'cfEnabled'      => $this->config->getBool('CF_ENABLED', false),
-            'npmEnabled'     => $this->config->getBool('NPM_ENABLED', false),
-            'cfRecordIp'     => $this->config->get('CF_RECORD_IP', ''),
-            'npmForwardHost' => $this->config->get('NPM_FORWARD_HOST', '127.0.0.1'),
-            'npmForwardPort' => $this->config->get('NPM_FORWARD_PORT', 80),
-            'npmSslEnabled'  => $this->config->getBool('NPM_SSL_ENABLED', false),
-            'npmCertId'      => (int) $this->config->get('NPM_CERTIFICATE_ID', 0),
-            'npmSslForced'   => $this->config->getBool('NPM_SSL_FORCED', false),
-            'npmHttp2'       => $this->config->getBool('NPM_HTTP2_SUPPORT', false),
-            'npmHsts'        => $this->config->getBool('NPM_HSTS_ENABLED', false),
-            'npmHstsSubs'    => $this->config->getBool('NPM_HSTS_SUBDOMAINS', false),
+            'cfEnabled'      => $cfEnabled,
+            'npmEnabled'     => $npmEnabled,
+            'cfRecordIp'     => '',
+            'npmForwardHost' => (string) ($npmDefaults['forward_host'] ?? '127.0.0.1'),
+            'npmForwardPort' => (string) ($npmDefaults['forward_port'] ?? '80'),
+            'npmSslEnabled'  => false,
+            'npmCertId'      => 0,
+            'npmSslForced'   => false,
+            'npmHttp2'       => false,
+            'npmHsts'        => false,
+            'npmHstsSubs'    => false,
             'npmCertificates' => $this->service->listNpmCertificates(),
         ]);
     }
@@ -184,8 +174,8 @@ final class VhostController extends BaseController
         $domain = strtolower(trim($domain));
         $docrootBase = trim((string) ($_POST['docroot_base'] ?? ''));
         $alias = $this->normalizeFolderName((string) ($_POST['alias'] ?? ''));
-        $createCloudflare = $this->config->getBool('CF_ENABLED', false) && $this->postBool('create_cloudflare');
-        $createNpm = $this->config->getBool('NPM_ENABLED', false) && $this->postBool('create_npm');
+        $createCloudflare = $this->hasProviderIntegration('cloudflare') && $this->postBool('create_cloudflare');
+        $createNpm = $this->hasProviderIntegration('npm') && $this->postBool('create_npm');
         $npmOptions = [
             'ssl_enabled'     => $this->postBool('npm_ssl_enabled'),
             'certificate_id'  => (int) ($_POST['npm_certificate_id'] ?? 0),
@@ -220,7 +210,7 @@ final class VhostController extends BaseController
             );
 
             $parts = ['Virtual host created successfully.'];
-            if ($this->config->getBool('CF_ENABLED', false)) {
+            if ($this->hasProviderIntegration('cloudflare')) {
                 if ($createCloudflare) {
                     $parts[] = !empty($created['cf_record_id'])
                         ? 'Cloudflare DNS record created.'
@@ -230,7 +220,7 @@ final class VhostController extends BaseController
                 }
             }
 
-            if ($this->config->getBool('NPM_ENABLED', false)) {
+            if ($this->hasProviderIntegration('npm')) {
                 if ($createNpm) {
                     $parts[] = !empty($created['npm_proxy_id'])
                         ? 'NPM proxy host created.'
@@ -286,8 +276,8 @@ final class VhostController extends BaseController
         $this->render('vhosts/edit.php', [
             'csrfToken' => $this->csrf->token(),
             'entry' => $entry,
-            'cfEnabled' => $this->config->getBool('CF_ENABLED', false),
-            'npmEnabled' => $this->config->getBool('NPM_ENABLED', false),
+            'cfEnabled' => $this->hasProviderIntegration('cloudflare'),
+            'npmEnabled' => $this->hasProviderIntegration('npm'),
             'npmCertificates' => $this->service->listNpmCertificates(),
         ]);
     }
@@ -408,44 +398,41 @@ final class VhostController extends BaseController
 
     private function additionalUsersCountFromConfig(): int
     {
-        $raw = (string) $this->config->get('USERS_JSON', '');
-        if ($raw === '') {
-            return 0;
-        }
-
-        $decoded = json_decode($raw, true);
-
-        return is_array($decoded) ? count($decoded) : 0;
+        return count(array_filter(
+            $this->settingsStore->userGetAll(),
+            static fn (array $u): bool => !(bool) ($u['is_primary'] ?? false)
+        ));
     }
 
     private function integrationCountFromConfig(): int
     {
-        $raw = (string) $this->config->get('INTEGRATIONS_JSON', '');
-        if ($raw !== '') {
-            $decoded = json_decode($raw, true);
-            if (is_array($decoded)) {
-                return count($decoded);
+        return count($this->settingsStore->integrationGetAll());
+    }
+
+    private function hasProviderIntegration(string $provider): bool
+    {
+        foreach ($this->settingsStore->integrationGetAll() as $integration) {
+            if (($integration['provider'] ?? '') === $provider) {
+                return true;
             }
         }
 
-        $count = 0;
-        if (
-            trim((string) $this->config->get('NPM_BASE_URL', '')) !== ''
-            && trim((string) $this->config->get('NPM_IDENTITY', '')) !== ''
-            && trim((string) $this->config->get('NPM_SECRET', '')) !== ''
-        ) {
-            $count++;
+        return false;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function firstProviderSettings(string $provider): array
+    {
+        foreach ($this->settingsStore->integrationGetAll() as $integration) {
+            if (($integration['provider'] ?? '') === $provider) {
+                $settings = $integration['settings'] ?? [];
+                return is_array($settings) ? $settings : [];
+            }
         }
 
-        if (
-            trim((string) $this->config->get('CF_API_TOKEN', '')) !== ''
-            && trim((string) $this->config->get('CF_ZONE_ID', '')) !== ''
-            && trim((string) $this->config->get('CF_RECORD_IP', '')) !== ''
-        ) {
-            $count++;
-        }
-
-        return $count;
+        return [];
     }
 
     /**
@@ -453,74 +440,7 @@ final class VhostController extends BaseController
      */
     private function domainsFromStore(): array
     {
-        $raw = (string) $this->config->get('DOMAINS_JSON', '[]');
-        $decoded = json_decode($raw, true);
-        if (!is_array($decoded)) {
-            return [];
-        }
-
-        $rows = [];
-        foreach ($decoded as $entry) {
-            if (is_string($entry)) {
-                $domain = strtolower(trim($entry));
-                if ($domain !== '' && \App\Security\DomainValidator::isValid($domain)) {
-                    $rows[] = ['domain' => $domain, 'updated_at' => ''];
-                }
-                continue;
-            }
-
-            if (!is_array($entry)) {
-                continue;
-            }
-
-            $domain = strtolower(trim((string) ($entry['domain'] ?? '')));
-            if ($domain === '' || !\App\Security\DomainValidator::isValid($domain)) {
-                continue;
-            }
-
-            $row = [
-                'domain' => $domain,
-                'updated_at' => trim((string) ($entry['updated_at'] ?? '')),
-            ];
-
-            if (is_array($entry['cloudflare'] ?? null)) {
-                $row['cloudflare'] = [
-                    'zone_id' => trim((string) ($entry['cloudflare']['zone_id'] ?? '')),
-                    'api_token' => trim((string) ($entry['cloudflare']['api_token'] ?? '')),
-                    'record_ip' => trim((string) ($entry['cloudflare']['record_ip'] ?? '')),
-                    'proxied' => !empty($entry['cloudflare']['proxied']),
-                    'ttl' => max(1, (int) ($entry['cloudflare']['ttl'] ?? 120)),
-                ];
-            }
-
-            $rows[] = $row;
-        }
-
-        return $rows;
+        return $this->settingsStore->domainGetAll();
     }
 
-    private function upsertCloudflareDomainMapping(string $domain, string $zoneId, string $apiToken): void
-    {
-        $raw = (string) $this->config->get('CF_DOMAINS_JSON', '[]');
-        $decoded = json_decode($raw, true);
-        $mappings = is_array($decoded) ? $decoded : [];
-
-        $mappings = array_values(array_filter(
-            $mappings,
-            static fn (array $row): bool => strtolower(trim((string) ($row['domain'] ?? ''))) !== $domain
-        ));
-
-        if ($zoneId !== '' && $apiToken !== '') {
-            $mappings[] = [
-                'domain' => $domain,
-                'zone_id' => $zoneId,
-                'api_token' => $apiToken,
-            ];
-            usort($mappings, static fn (array $a, array $b): int => strcasecmp((string) ($a['domain'] ?? ''), (string) ($b['domain'] ?? '')));
-        }
-
-        $this->settingsStore->setMany([
-            'CF_DOMAINS_JSON' => json_encode($mappings, JSON_UNESCAPED_SLASHES) ?: '[]',
-        ]);
-    }
 }

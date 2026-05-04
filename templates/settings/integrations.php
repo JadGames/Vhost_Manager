@@ -164,8 +164,15 @@
 
                 <div id="add-npm-step-1">
                     <div class="form-group" style="margin-bottom: 14px;">
-                        <label class="form-label" for="add_npm_base_url">Base URL <span style="color:var(--danger)"> *</span></label>
-                        <input class="form-input" id="add_npm_base_url" type="url" name="settings[base_url]" placeholder="http://npm:81" value="http://npm:81">
+                        <label class="form-label" for="add_npm_base_url_input">Base URL <span style="color:var(--danger)"> *</span></label>
+                        <input type="hidden" name="settings[base_url]" id="add_npm_base_url">
+                        <div class="app-url-input-row">
+                            <select class="form-select" id="add_npm_base_url_scheme" aria-label="NPM URL protocol">
+                                <option value="http" selected>http://</option>
+                                <option value="https">https://</option>
+                            </select>
+                            <input class="form-input" id="add_npm_base_url_input" type="text" placeholder="npm.example.com:81 or 192.168.1.100:81" value="npm:81">
+                        </div>
                         <span class="form-field-error" id="err_npm_base_url" hidden></span>
                     </div>
 
@@ -281,6 +288,87 @@
     </div>
 </dialog>
 
+<!-- ══ TEST RESULT MODAL ══ -->
+<dialog id="test-result-modal" aria-modal="true" aria-labelledby="test-result-title">
+    <div class="dialog-header">
+        <div class="dialog-header-text">
+            <p class="dialog-title" id="test-result-title">Connection Test</p>
+            <p class="dialog-subtitle" id="test-result-subtitle">Integration test result</p>
+        </div>
+        <button class="dialog-close-btn" type="button" id="test-result-close" aria-label="Close">
+            <i class="fa-solid fa-xmark"></i>
+        </button>
+    </div>
+    <div class="dialog-body">
+        <p id="test-result-message" style="margin:0 0 1rem 0;"></p>
+        <div class="dialog-footer">
+            <div style="flex:1"></div>
+            <button class="btn btn--primary" type="button" id="test-result-ok">OK</button>
+        </div>
+    </div>
+</dialog>
+
+<!-- ══ CLOUDFLARE DOMAINS MODAL ══ -->
+<dialog id="cloudflare-domains-modal" aria-modal="true" aria-labelledby="cloudflare-domains-title">
+    <div class="dialog-header">
+        <div class="dialog-header-text">
+            <p class="dialog-title" id="cloudflare-domains-title">Cloudflare Coverage</p>
+            <p class="dialog-subtitle" id="cloudflare-domains-subtitle">Domains with Cloudflare enabled</p>
+        </div>
+        <button class="dialog-close-btn" type="button" id="cloudflare-domains-close" aria-label="Close">
+            <i class="fa-solid fa-xmark"></i>
+        </button>
+    </div>
+    <div class="dialog-body">
+        <div id="cloudflare-domains-list-wrap" class="cf-domains-list-wrap"></div>
+        <div class="dialog-footer">
+            <div style="flex:1"></div>
+            <button class="btn btn--ghost" type="button" id="cloudflare-domains-test-all">Test All</button>
+            <button class="btn btn--primary" type="button" id="cloudflare-domains-ok">Close</button>
+        </div>
+    </div>
+</dialog>
+
+<!-- ══ CLOUDFLARE DOMAIN TEST RESULT MODAL ══ -->
+<dialog id="cloudflare-domain-result-modal" aria-modal="true" aria-labelledby="cloudflare-domain-result-title">
+    <div class="dialog-header">
+        <div class="dialog-header-text">
+            <p class="dialog-title" id="cloudflare-domain-result-title">Domain Test Result</p>
+            <p class="dialog-subtitle" id="cloudflare-domain-result-subtitle">Single domain check</p>
+        </div>
+        <button class="dialog-close-btn" type="button" id="cloudflare-domain-result-close" aria-label="Close">
+            <i class="fa-solid fa-xmark"></i>
+        </button>
+    </div>
+    <div class="dialog-body">
+        <p id="cloudflare-domain-result-message" style="margin:0 0 1rem 0;"></p>
+        <div class="dialog-footer">
+            <div style="flex:1"></div>
+            <button class="btn btn--primary" type="button" id="cloudflare-domain-result-ok">Close</button>
+        </div>
+    </div>
+</dialog>
+
+<!-- ══ CLOUDFLARE TEST-ALL RESULTS MODAL ══ -->
+<dialog id="cloudflare-test-all-modal" aria-modal="true" aria-labelledby="cloudflare-test-all-title">
+    <div class="dialog-header">
+        <div class="dialog-header-text">
+            <p class="dialog-title" id="cloudflare-test-all-title">Cloudflare Test All Results</p>
+            <p class="dialog-subtitle" id="cloudflare-test-all-subtitle">Domain validation summary</p>
+        </div>
+        <button class="dialog-close-btn" type="button" id="cloudflare-test-all-close" aria-label="Close">
+            <i class="fa-solid fa-xmark"></i>
+        </button>
+    </div>
+    <div class="dialog-body">
+        <div id="cloudflare-test-all-results" class="cf-test-all-results"></div>
+        <div class="dialog-footer">
+            <div style="flex:1"></div>
+            <button class="btn btn--primary" type="button" id="cloudflare-test-all-ok">Close</button>
+        </div>
+    </div>
+</dialog>
+
 <!-- All integration data for JS -->
 <script nonce="<?= e((string) ($cspNonce ?? '')) ?>">
 var VHM_INTEGRATIONS = <?= json_encode(array_map(static function (array $i): array {
@@ -301,9 +389,22 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
             'fields' => array_map(static fn ($f) => ['name' => $f['name'], 'label' => $f['label'], 'type' => $f['type'], 'required' => $f['required'], 'placeholder' => $f['placeholder']], $fields)];
 }, $allProviders), JSON_UNESCAPED_SLASHES) ?: '{}' ?>;
 
+var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDomains ?? []), JSON_UNESCAPED_SLASHES) ?: '[]' ?>;
+
 (function () {
     var addModal   = document.getElementById('add-integration-modal');
     var editModal  = document.getElementById('edit-integration-modal');
+    var testResultModal = document.getElementById('test-result-modal');
+    var testResultMessage = document.getElementById('test-result-message');
+    var testResultSubtitle = document.getElementById('test-result-subtitle');
+    var cloudflareDomainsModal = document.getElementById('cloudflare-domains-modal');
+    var cloudflareDomainsListWrap = document.getElementById('cloudflare-domains-list-wrap');
+    var cloudflareDomainsTestAll = document.getElementById('cloudflare-domains-test-all');
+    var cloudflareDomainResultModal = document.getElementById('cloudflare-domain-result-modal');
+    var cloudflareDomainResultMessage = document.getElementById('cloudflare-domain-result-message');
+    var cloudflareDomainResultSubtitle = document.getElementById('cloudflare-domain-result-subtitle');
+    var cloudflareTestAllModal = document.getElementById('cloudflare-test-all-modal');
+    var cloudflareTestAllResults = document.getElementById('cloudflare-test-all-results');
     var addForm    = document.getElementById('add-integration-form');
     var addProvider = document.getElementById('add_provider');
     var addSubmit  = document.getElementById('add-modal-submit');
@@ -337,6 +438,129 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
         }
 
         dialogEl.removeAttribute('open');
+    }
+
+    function showTestResult(ok, message) {
+        if (!testResultModal || !testResultMessage || !testResultSubtitle) {
+            return;
+        }
+
+        testResultSubtitle.textContent = ok ? 'Success' : 'Failed';
+        testResultMessage.textContent = message;
+        testResultMessage.style.color = ok ? 'var(--accent)' : 'var(--danger)';
+        openDialog(testResultModal);
+    }
+
+    function showCloudflareDomainsModal() {
+        if (!cloudflareDomainsModal || !cloudflareDomainsListWrap) {
+            return;
+        }
+
+        var domains = Array.isArray(VHM_CF_ENABLED_DOMAINS) ? VHM_CF_ENABLED_DOMAINS.slice() : [];
+        domains = domains.filter(function (d) { return String(d || '').trim() !== ''; });
+
+        if (domains.length === 0) {
+            cloudflareDomainsListWrap.innerHTML =
+                '<p style="margin:0 0 1rem 0; text-align:center; color:var(--text-3);">No domains currently have Cloudflare enabled.</p>' +
+                '<div style="display:flex; justify-content:center;">' +
+                '<a class="btn btn--primary" href="/?route=domains">Add Domain</a>' +
+                '</div>';
+            if (cloudflareDomainsTestAll) {
+                cloudflareDomainsTestAll.disabled = true;
+            }
+        } else {
+            var escaped = domains.map(function (domain) {
+                var item = document.createElement('span');
+                item.textContent = String(domain);
+                return '<div class="cf-domain-tile" data-cf-domain="' + item.innerHTML + '">' +
+                    '<span class="cf-domain-tile__name">' + item.innerHTML + '</span>' +
+                    '<button class="btn btn--ghost btn--sm" type="button" data-cf-test-domain="' + item.innerHTML + '">' +
+                    '<i class="fa-solid fa-bolt"></i> Test' +
+                    '</button>' +
+                    '</div>';
+            }).join('');
+            cloudflareDomainsListWrap.innerHTML =
+                '<p style="margin:0 0 .75rem 0; color:var(--text-3);">Cloudflare-enabled domains:</p>' +
+                '<div class="cf-domains-grid">' + escaped + '</div>';
+            if (cloudflareDomainsTestAll) {
+                cloudflareDomainsTestAll.disabled = false;
+            }
+        }
+
+        openDialog(cloudflareDomainsModal);
+    }
+
+    function csrfTokenValue() {
+        var tokenInput = document.querySelector('#add-integration-form input[name=csrf_token]');
+        return tokenInput ? tokenInput.value : '';
+    }
+
+    function testCloudflareDomain(domain) {
+        var body = new URLSearchParams();
+        body.set('csrf_token', csrfTokenValue());
+        body.set('domain', String(domain || ''));
+
+        return fetch('/?route=settings-integrations-cloudflare-domain-test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        })
+            .then(function (r) {
+                return r.json().catch(function () { return { ok: false, message: 'Invalid response from server.' }; });
+            })
+            .then(function (data) {
+                return {
+                    ok: !!(data && data.ok),
+                    message: (data && data.message) ? String(data.message) : 'Cloudflare test failed.',
+                };
+            })
+            .catch(function () {
+                return {
+                    ok: false,
+                    message: 'Cloudflare test failed.',
+                };
+            });
+    }
+
+    var reopenCloudflareListOnSingleClose = false;
+
+    function showCloudflareSingleResult(domain, result) {
+        if (!cloudflareDomainResultModal || !cloudflareDomainResultMessage || !cloudflareDomainResultSubtitle) {
+            return;
+        }
+
+        closeDialog(cloudflareDomainsModal);
+        cloudflareDomainResultSubtitle.textContent = String(domain || 'Domain');
+        cloudflareDomainResultMessage.textContent = result && result.message ? result.message : (result && result.ok ? 'Success.' : 'Failed.');
+        cloudflareDomainResultMessage.style.color = result && result.ok ? 'var(--accent)' : 'var(--danger)';
+        reopenCloudflareListOnSingleClose = true;
+        openDialog(cloudflareDomainResultModal);
+    }
+
+    function showCloudflareTestAllResults(results) {
+        if (!cloudflareTestAllModal || !cloudflareTestAllResults) {
+            return;
+        }
+
+        closeDialog(cloudflareDomainsModal);
+
+        var rows = (results || []).map(function (row) {
+            var domainNode = document.createElement('span');
+            domainNode.textContent = String(row.domain || '');
+            var messageNode = document.createElement('span');
+            messageNode.textContent = String(row.message || '');
+            return '<div class="cf-test-all-row">' +
+                '<div class="cf-test-all-row__head">' +
+                '<span class="cf-test-all-row__domain">' + domainNode.innerHTML + '</span>' +
+                '<span class="cf-test-all-row__status ' + (row.ok ? 'is-ok' : 'is-fail') + '">' + (row.ok ? 'Success' : 'Failed') + '</span>' +
+                '</div>' +
+                '<div class="cf-test-all-row__message">' + messageNode.innerHTML + '</div>' +
+                '</div>';
+        }).join('');
+
+        cloudflareTestAllResults.innerHTML = rows || '<p>No domain results.</p>';
+        reopenCloudflareListOnSingleClose = false;
+        openDialog(cloudflareTestAllModal);
     }
 
     function showFieldError(inputEl, msg) {
@@ -441,6 +665,23 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
         return String(value || '').trim() !== '';
     }
 
+    function buildAddNpmBaseUrl() {
+        var baseUrlSchemeInput = document.getElementById('add_npm_base_url_scheme');
+        var baseUrlInput = document.getElementById('add_npm_base_url_input');
+        var baseUrlHidden = document.getElementById('add_npm_base_url');
+        var scheme = baseUrlSchemeInput ? String(baseUrlSchemeInput.value || 'http').trim() : 'http';
+        var value = baseUrlInput ? String(baseUrlInput.value || '').trim() : '';
+
+        value = value.replace(/^https?:\/\//i, '').replace(/^\/+/, '');
+
+        var fullUrl = value ? (scheme + '://' + value) : '';
+        if (baseUrlHidden) {
+            baseUrlHidden.value = fullUrl;
+        }
+
+        return fullUrl;
+    }
+
     function updateAddActionState() {
         var provider = addProvider.value;
         var hasName = addName ? isNonEmpty(addName.value) : false;
@@ -466,7 +707,7 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
         if (provider === 'npm') {
             var inStep1 = npmStep1 && !npmStep1.hidden;
             if (inStep1) {
-                var baseUrlInput = document.getElementById('add_npm_base_url');
+                var baseUrlInput = document.getElementById('add_npm_base_url_input');
                 var adminIdentityInput = document.getElementById('add_npm_admin_identity');
                 var adminSecretInput = document.getElementById('add_npm_admin_secret');
                 var step1Ready = commonReady
@@ -552,9 +793,13 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
 
     addForm.addEventListener('input', function (e) {
         clearFieldError(e.target);
+        buildAddNpmBaseUrl();
         updateAddActionState();
     });
-    addForm.addEventListener('change', updateAddActionState);
+    addForm.addEventListener('change', function () {
+        buildAddNpmBaseUrl();
+        updateAddActionState();
+    });
 
     if (addNext) {
         addNext.addEventListener('click', function () {
@@ -563,10 +808,10 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
             var csrfToken = csrfTokenInput ? csrfTokenInput.value : '';
 
             if (provider === 'npm') {
-                var baseUrlInput = document.getElementById('add_npm_base_url');
+                var baseUrlInput = document.getElementById('add_npm_base_url_input');
                 var adminIdentityInput = document.getElementById('add_npm_admin_identity');
                 var adminSecretInput = document.getElementById('add_npm_admin_secret');
-                var baseUrl = baseUrlInput ? baseUrlInput.value.trim() : '';
+                var baseUrl = buildAddNpmBaseUrl();
                 var adminIdentity = adminIdentityInput ? adminIdentityInput.value.trim() : '';
                 var adminSecret = adminSecretInput ? adminSecretInput.value : '';
 
@@ -819,18 +1064,110 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
         resetAddFlowState();
         closeDialog(addModal);
     });
-    addModal.addEventListener('click', function (e) {
-        if (e.target === addModal) {
-            addFlowCategory = null;
-            resetAddFlowState();
-            closeDialog(addModal);
-        }
-    });
 
     // ── Close Edit modal ──
     document.getElementById('edit-modal-close').addEventListener('click', function () { closeDialog(editModal); });
     document.getElementById('edit-modal-cancel').addEventListener('click', function () { closeDialog(editModal); });
-    editModal.addEventListener('click', function (e) { if (e.target === editModal) closeDialog(editModal); });
+
+    // ── Close Test Result modal ──
+    var testResultClose = document.getElementById('test-result-close');
+    var testResultOk = document.getElementById('test-result-ok');
+    if (testResultClose) {
+        testResultClose.addEventListener('click', function () { closeDialog(testResultModal); });
+    }
+    if (testResultOk) {
+        testResultOk.addEventListener('click', function () { closeDialog(testResultModal); });
+    }
+    var cloudflareDomainsClose = document.getElementById('cloudflare-domains-close');
+    var cloudflareDomainsOk = document.getElementById('cloudflare-domains-ok');
+    if (cloudflareDomainsClose) {
+        cloudflareDomainsClose.addEventListener('click', function () { closeDialog(cloudflareDomainsModal); });
+    }
+    if (cloudflareDomainsOk) {
+        cloudflareDomainsOk.addEventListener('click', function () { closeDialog(cloudflareDomainsModal); });
+    }
+    if (cloudflareDomainsTestAll) {
+        cloudflareDomainsTestAll.addEventListener('click', function () {
+            var domains = Array.isArray(VHM_CF_ENABLED_DOMAINS) ? VHM_CF_ENABLED_DOMAINS.slice() : [];
+            domains = domains.filter(function (d) { return String(d || '').trim() !== ''; });
+            if (domains.length === 0) {
+                return;
+            }
+
+            cloudflareDomainsTestAll.disabled = true;
+            cloudflareDomainsTestAll.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Testing';
+
+            Promise.all(domains.map(function (domain) {
+                return testCloudflareDomain(domain).then(function (result) {
+                    return {
+                        domain: domain,
+                        ok: result.ok,
+                        message: result.message,
+                    };
+                });
+            })).then(function (results) {
+                showCloudflareTestAllResults(results);
+            }).finally(function () {
+                cloudflareDomainsTestAll.disabled = false;
+                cloudflareDomainsTestAll.innerHTML = 'Test All';
+            });
+        });
+    }
+
+    var cloudflareDomainResultClose = document.getElementById('cloudflare-domain-result-close');
+    var cloudflareDomainResultOk = document.getElementById('cloudflare-domain-result-ok');
+    function closeSingleResultModal() {
+        closeDialog(cloudflareDomainResultModal);
+        if (reopenCloudflareListOnSingleClose) {
+            openDialog(cloudflareDomainsModal);
+        }
+    }
+    if (cloudflareDomainResultClose) {
+        cloudflareDomainResultClose.addEventListener('click', closeSingleResultModal);
+    }
+    if (cloudflareDomainResultOk) {
+        cloudflareDomainResultOk.addEventListener('click', closeSingleResultModal);
+    }
+
+    var cloudflareTestAllClose = document.getElementById('cloudflare-test-all-close');
+    var cloudflareTestAllOk = document.getElementById('cloudflare-test-all-ok');
+    function closeAllCloudflareModals() {
+        closeDialog(cloudflareTestAllModal);
+        closeDialog(cloudflareDomainResultModal);
+        closeDialog(cloudflareDomainsModal);
+        reopenCloudflareListOnSingleClose = false;
+    }
+    if (cloudflareTestAllClose) {
+        cloudflareTestAllClose.addEventListener('click', closeAllCloudflareModals);
+    }
+    if (cloudflareTestAllOk) {
+        cloudflareTestAllOk.addEventListener('click', closeAllCloudflareModals);
+    }
+
+    if (cloudflareDomainsListWrap) {
+        cloudflareDomainsListWrap.addEventListener('click', function (event) {
+            var btn = event.target.closest('[data-cf-test-domain]');
+            if (!btn) {
+                return;
+            }
+
+            var domain = btn.getAttribute('data-cf-test-domain') || '';
+            if (!domain) {
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Testing';
+            testCloudflareDomain(domain)
+                .then(function (result) {
+                    showCloudflareSingleResult(domain, result);
+                })
+                .finally(function () {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa-solid fa-bolt"></i> Test';
+                });
+        });
+    }
 
     // ── Delete button ──
     document.getElementById('edit-modal-delete').addEventListener('click', function () {
@@ -844,7 +1181,13 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
         btn.addEventListener('click', function (event) {
             event.stopPropagation();
             var id = btn.getAttribute('data-test-integration');
-            var originalHtml = btn.innerHTML;
+            var integration = VHM_INTEGRATIONS.find(function (i) { return i.id === id; });
+
+            if (integration && integration.provider === 'cloudflare') {
+                showCloudflareDomainsModal();
+                return;
+            }
+
             btn.disabled = true;
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
             fetch('/?route=settings-integrations-test', {
@@ -857,14 +1200,17 @@ var VHM_PROVIDERS = <?= json_encode(array_map(static function (array $p): array 
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 btn.disabled = false;
-                btn.innerHTML = data.ok
-                    ? '<i class="fa-solid fa-circle-check" style="color:var(--accent)"></i> OK'
-                    : '<i class="fa-solid fa-circle-xmark" style="color:var(--danger)"></i> Failed';
-                setTimeout(function () { btn.innerHTML = originalHtml; }, 3000);
+                btn.innerHTML = '<i class="fa-solid fa-bolt"></i> Test';
+                if (data && data.ok) {
+                    showTestResult(true, 'Connection successful.');
+                } else {
+                    showTestResult(false, (data && data.message) ? data.message : 'Connection test failed.');
+                }
             })
             .catch(function () {
                 btn.disabled = false;
-                btn.innerHTML = originalHtml;
+                btn.innerHTML = '<i class="fa-solid fa-bolt"></i> Test';
+                showTestResult(false, 'Connection test failed.');
             });
         });
     });

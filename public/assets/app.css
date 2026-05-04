@@ -1942,7 +1942,7 @@ dialog::backdrop {
 
 .dialog-row {
     display: flex;
-    align-items: baseline;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
     padding: 10px 14px;
@@ -2003,10 +2003,102 @@ dialog::backdrop {
     font-family: var(--font-mono);
     font-size: 13px;
     color: var(--text-2);
-    text-align: right;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    text-align: left;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: normal;
+}
+
+#test-result-modal,
+#cloudflare-domains-modal,
+#setupNpmTestFailedModal {
+    width: min(720px, 94vw);
+}
+
+#test-result-message {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.cf-domains-list-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.cf-domains-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.cf-domain-tile {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+}
+
+.cf-domain-tile__name {
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.cf-test-all-results {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.cf-test-all-row {
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.cf-test-all-row__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.cf-test-all-row__domain {
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.cf-test-all-row__status {
+    font-size: 12px;
+    font-weight: 700;
     white-space: nowrap;
+}
+
+.cf-test-all-row__status.is-ok {
+    color: var(--accent);
+}
+
+.cf-test-all-row__status.is-fail {
+    color: var(--danger);
+}
+
+.cf-test-all-row__message {
+    color: var(--text-3);
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 /* ================================================

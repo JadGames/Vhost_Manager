@@ -8,7 +8,7 @@
 
     <div class="auth-box">
         <h1 class="auth-title">Setup: Review & Confirm</h1>
-        <p class="auth-subtitle">Step 3 of 3: Review your settings</p>
+        <p class="auth-subtitle">Step 4 of 4: Review your settings</p>
 
         <div class="confirm-card">
             <h3 class="confirm-card-title">Admin Account</h3>
@@ -31,7 +31,7 @@
                 <strong>App URL:</strong>
                 <span><?= e((string) $summary['app_url']) ?></span>
                 <strong>Protocol:</strong>
-                <span><?= $summary['app_https'] ? 'HTTPS' : 'HTTP' ?></span>
+                <span><?= !empty($summary['app_https']) ? 'HTTPS' : 'HTTP' ?></span>
                 <strong>Allowed Docroot Bases:</strong>
                 <span><?= e((string) $summary['allowed_docroot_bases']) ?></span>
                 <strong>Default Docroot Base:</strong>
@@ -40,40 +40,32 @@
         </div>
 
         <div class="confirm-card">
-            <h3 class="confirm-card-title">Reverse Proxy</h3>
+            <h3 class="confirm-card-title">Integrations</h3>
             <div class="confirm-grid">
-                <strong>Mode:</strong>
-                <span>
-                    <?php 
-                    $modes = [
-                        'builtin_npm' => 'Built-in NPM (Docker)',
-                        'external_npm' => 'External NPM',
-                        'disabled' => 'Disabled'
-                    ];
-                    echo e($modes[$summary['proxy_mode']] ?? $summary['proxy_mode']);
-                    ?>
-                </span>
-                <?php if ($summary['proxy_mode'] === 'builtin_npm'): ?>
-                    <strong>NPM Admin Email:</strong>
-                    <span><?= e((string) $summary['builtin_npm_identity']) ?></span>
-                    <strong>NPM Admin Password:</strong>
-                    <span class="confirm-secret" data-secret-value="<?= e((string) $summary['builtin_npm_secret']) ?>">
-                        ••••••••••
-                        <button type="button" class="confirm-secret-toggle" data-secret-index="1" aria-label="Show password"><i class="fa-solid fa-eye"></i></button>
-                    </span>
-                    <strong>Status:</strong>
-                    <span><i class="fa-solid fa-check" style="color: var(--accent);"></i> Connection successful</span>
-                    <strong>VHM Runtime Account:</strong>
-                    <span><?= e((string) $summary['npm_identity']) ?></span>
-                <?php elseif ($summary['proxy_mode'] === 'external_npm'): ?>
-                    <strong>NPM URL:</strong>
-                    <span><?= e((string) $summary['npm_base_url']) ?></span>
-                    <strong>VHM Runtime Account:</strong>
-                    <span><?= e((string) $summary['npm_identity']) ?></span>
-                    <strong>Forward To:</strong>
-                    <span><?= e((string) $summary['npm_forward_host']) ?>:<?= e((string) $summary['npm_forward_port']) ?></span>
-                    <strong>Status:</strong>
-                    <span><i class="fa-solid fa-check" style="color: var(--accent);"></i> Connection successful</span>
+                <strong>Reverse Proxy:</strong>
+                <?php if (!empty($summary['proxy_integration']) && is_array($summary['proxy_integration'])): ?>
+                    <span><?= e((string) ($summary['proxy_integration']['name'] ?? 'Proxy Integration')) ?> (<?= e((string) ($summary['proxy_provider_label'] ?? 'Provider')) ?>)</span>
+                    <?php if (!empty($summary['proxy_integration']['base_url'])): ?>
+                        <strong>Base URL:</strong>
+                        <span><?= e((string) ($summary['proxy_integration']['base_url'] ?? '')) ?></span>
+                    <?php endif; ?>
+                    <?php if (!empty($summary['proxy_integration']['identity'])): ?>
+                        <strong>Runtime Account:</strong>
+                        <span><?= e((string) ($summary['proxy_integration']['identity'] ?? '')) ?></span>
+                    <?php endif; ?>
+                    <?php if (!empty($summary['proxy_integration']['forward_host'])): ?>
+                        <strong>Forward To:</strong>
+                        <span><?= e((string) ($summary['proxy_integration']['forward_host'] ?? '')) ?>:<?= e((string) ($summary['proxy_integration']['forward_port'] ?? '')) ?></span>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <span>Not configured</span>
+                <?php endif; ?>
+
+                <strong>DNS Provider:</strong>
+                <?php if (!empty($summary['dns_integration']) && is_array($summary['dns_integration'])): ?>
+                    <span><?= e((string) ($summary['dns_integration']['name'] ?? 'DNS Integration')) ?> (<?= e((string) ($summary['dns_provider_label'] ?? 'Provider')) ?>)</span>
+                <?php else: ?>
+                    <span>Not configured</span>
                 <?php endif; ?>
             </div>
         </div>
@@ -82,7 +74,7 @@
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
 
             <div style="display:flex; gap:8px;">
-                <a href="/?route=setup-integration" class="btn btn--secondary" style="flex:1; text-align:center; text-decoration:none;">
+                <a href="/?route=setup-dns" class="btn btn--secondary" style="flex:1; text-align:center; text-decoration:none;">
                     <i class="fa-solid fa-arrow-left"></i> Back
                 </a>
                 <button class="btn btn--success" type="submit" style="flex:1;">

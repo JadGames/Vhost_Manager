@@ -51,7 +51,7 @@ final class SettingsController extends BaseController
             'defaultDocrootBase' => (string) $this->config->get('DEFAULT_DOCROOT_BASE', '/var/www'),
             'baseDomain' => (string) $this->config->get('VHOST_BASE_DOMAIN', ''),
             'domainOptions' => $this->domainOptionsFromStore(),
-            'adminUser' => (string) $this->config->get('ADMIN_USER', 'admin@example.com'),
+            'adminUser' => $this->primaryAdminEmail(),
             'additionalUsers' => $additionalUsers,
             'usersCount' => count($additionalUsers),
             'cfDomainMappingsCount' => count($this->cloudflareDomainsFromStore()),
@@ -170,8 +170,14 @@ final class SettingsController extends BaseController
                         throw new RuntimeException('Integration ID is required.');
                     }
 
-                    if ($this->settingsStore->integrationGet($id) === null) {
+                    $integration = $this->settingsStore->integrationGet($id);
+                    if ($integration === null) {
                         throw new RuntimeException('Integration not found.');
+                    }
+
+                    $removeNpmRuntime = isset($_POST['remove_npm_runtime']) && (string) $_POST['remove_npm_runtime'] === '1';
+                    if ($removeNpmRuntime && (string) ($integration['provider'] ?? '') === 'npm') {
+                        $this->removeNpmIntegrationRuntime($integration);
                     }
 
                     $this->settingsStore->integrationDelete($id);
@@ -566,7 +572,7 @@ final class SettingsController extends BaseController
 
     public function showUsers(): void
     {
-        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+        $adminUser = $this->primaryAdminEmail();
         $this->render('settings/users.php', [
             'csrfToken' => $this->csrf->token(),
             'adminUser' => $adminUser,
@@ -670,7 +676,8 @@ final class SettingsController extends BaseController
         $newPassword = (string) ($_POST['new_password'] ?? '');
         $confirmPassword = (string) ($_POST['confirm_password'] ?? '');
 
-        $existingHash = (string) $this->config->get('ADMIN_PASSWORD_HASH', '');
+        $primaryAdmin = $this->primaryAdminRecord();
+        $existingHash = trim((string) ($primaryAdmin['password_hash'] ?? ''));
         if ($existingHash !== '' && !password_verify($currentPassword, $existingHash)) {
             Session::setFlash('error', 'Current password is incorrect.');
             $this->redirect('settings');
@@ -694,10 +701,7 @@ final class SettingsController extends BaseController
         }
 
         try {
-            $this->settingsStore->setMany([
-                'ADMIN_PASSWORD_HASH' => $hash,
-            ]);
-            $adminEmail = strtolower(trim((string) $this->config->get('ADMIN_USER', '')));
+            $adminEmail = $this->primaryAdminEmail();
             if ($adminEmail !== '') {
                 $this->settingsStore->userUpsert(['email' => $adminEmail, 'password_hash' => $hash]);
             }
@@ -914,16 +918,7 @@ final class SettingsController extends BaseController
                 throw new RuntimeException('NPM runtime credentials are missing. Re-run provisioning from the integration form.');
             }
 
-            $tokenResult = (new HttpClient($verifySsl))->post($baseUrl . '/api/tokens', [
-                'identity' => $identity,
-                'secret' => $secret,
-            ]);
-
-            $tokenBody = $tokenResult['body'] ?? null;
-            $token = is_array($tokenBody) ? trim((string) ($tokenBody['token'] ?? '')) : '';
-            if ((int) ($tokenResult['status'] ?? 0) !== 200 || $token === '') {
-                throw new RuntimeException('NPM authentication test failed. Verify runtime credentials and base URL.');
-            }
+            $this->resolveNpmRuntimeToken($baseUrl, $identity, $secret);
 
             return [
                 'type' => 'generic',
@@ -991,12 +986,7 @@ final class SettingsController extends BaseController
             throw new RuntimeException('That email already exists as an additional user.');
         }
 
-        $oldAdmin = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
-
-        $this->settingsStore->setMany([
-            'ADMIN_USER' => $newAdmin,
-            'ADMIN_FULL_NAME' => $newAdminFullName,
-        ]);
+        $oldAdmin = $this->primaryAdminEmail();
 
         if ($oldAdmin !== '' && $oldAdmin !== $newAdmin) {
             $this->settingsStore->userUpdateEmail($oldAdmin, $newAdmin);
@@ -1017,7 +1007,7 @@ final class SettingsController extends BaseController
         $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
         $newEmail = strtolower(trim((string) ($_POST['new_user_email'] ?? '')));
         $newFullName = trim((string) ($_POST['new_user_full_name'] ?? ''));
-        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+        $adminUser = $this->primaryAdminEmail();
 
         if ($targetUser === '') {
             throw new RuntimeException('Target user is required.');
@@ -1070,7 +1060,7 @@ final class SettingsController extends BaseController
         $password = (string) ($_POST['new_password'] ?? '');
         $confirm = (string) ($_POST['new_password_confirm'] ?? '');
         $role = strtolower(trim((string) ($_POST['new_user_role'] ?? 'user')));
-        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+        $adminUser = $this->primaryAdminEmail();
 
         if ($username === '' || filter_var($username, FILTER_VALIDATE_EMAIL) === false) {
             throw new RuntimeException('User email must be a valid email address.');
@@ -1123,7 +1113,7 @@ final class SettingsController extends BaseController
         $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
         $password = (string) ($_POST['reset_password'] ?? '');
         $confirm = (string) ($_POST['reset_password_confirm'] ?? '');
-        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+        $adminUser = $this->primaryAdminEmail();
 
         if ($targetUser === '') {
             throw new RuntimeException('Target user is required.');
@@ -1144,7 +1134,7 @@ final class SettingsController extends BaseController
         }
 
         if ($targetUser === $adminUser) {
-            $this->settingsStore->setMany(['ADMIN_PASSWORD_HASH' => $hash]);
+            $this->settingsStore->userUpsert(['email' => $adminUser, 'password_hash' => $hash]);
 
             return;
         }
@@ -1160,7 +1150,7 @@ final class SettingsController extends BaseController
     private function handleUserDelete(): void
     {
         $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
-        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+        $adminUser = $this->primaryAdminEmail();
 
         if ($targetUser === '' || $targetUser === $adminUser) {
             throw new RuntimeException('Only additional users can be deleted.');
@@ -1185,7 +1175,7 @@ final class SettingsController extends BaseController
             throw new RuntimeException('Target user is required.');
         }
 
-        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+        $adminUser = $this->primaryAdminEmail();
         if ($targetUser === $adminUser) {
             throw new RuntimeException('Primary admin account cannot be disabled.');
         }
@@ -1213,7 +1203,7 @@ final class SettingsController extends BaseController
             throw new RuntimeException('Target user is required.');
         }
 
-        $adminUser = strtolower(trim((string) $this->config->get('ADMIN_USER', 'admin@example.com')));
+        $adminUser = $this->primaryAdminEmail();
         if ($targetUser === $adminUser) {
             throw new RuntimeException('Primary admin account role cannot be changed.');
         }
@@ -1328,6 +1318,21 @@ final class SettingsController extends BaseController
     private function postBool(string $key): bool
     {
         return isset($_POST[$key]) && (string) $_POST[$key] === '1';
+    }
+
+    /**
+     * @return array{email:string,password_hash:string,full_name:string,account_type:string,is_primary:bool,active:bool,created_at:string,last_login_at:string,updated_at:string}|null
+     */
+    private function primaryAdminRecord(): ?array
+    {
+        return $this->settingsStore->userGetPrimary();
+    }
+
+    private function primaryAdminEmail(): string
+    {
+        $record = $this->primaryAdminRecord();
+
+        return strtolower(trim((string) ($record['email'] ?? 'admin@example.com')));
     }
 
     private function isIntegrationNameInUse(string $name, ?string $ignoreId): bool
@@ -1613,5 +1618,187 @@ final class SettingsController extends BaseController
         unset($email);
 
         return strtolower(bin2hex(random_bytes(3))) . '@vhost-manager.npm';
+    }
+
+    /**
+     * @param array{id:string,name:string,provider:string,category:string,settings:array<string,string>} $integration
+     */
+    private function removeNpmIntegrationRuntime(array $integration): void
+    {
+        $settings = is_array($integration['settings'] ?? null) ? $integration['settings'] : [];
+        $baseUrl = rtrim(trim((string) ($settings['base_url'] ?? '')), '/');
+        $identity = strtolower(trim((string) ($settings['identity'] ?? '')));
+        $secret = trim((string) ($settings['secret'] ?? ''));
+
+        if ($baseUrl === '' || filter_var($baseUrl, FILTER_VALIDATE_URL) === false) {
+            throw new RuntimeException('Cannot remove NPM runtime account because base URL is invalid.');
+        }
+
+        if ($identity === '' || $secret === '') {
+            throw new RuntimeException('Cannot remove NPM runtime account because credentials are missing.');
+        }
+
+        $runtimeToken = $this->resolveNpmRuntimeToken($baseUrl, $identity, $secret);
+        $runtimeUserId = $this->resolveNpmUserIdByEmail($baseUrl, $runtimeToken, $identity);
+        if ($runtimeUserId === null) {
+            throw new RuntimeException('NPM runtime account was not found. It may already be deleted.');
+        }
+
+        $this->deleteNpmProxyHostRecordsForUser($baseUrl, $runtimeToken, $runtimeUserId);
+        $this->deleteNpmUserById($baseUrl, $runtimeToken, $runtimeUserId);
+    }
+
+    private function resolveNpmRuntimeToken(string $baseUrl, string $identity, string $secret): string
+    {
+        $tokenUrl = rtrim($baseUrl, '/') . '/api/tokens';
+
+        try {
+            $tokenResult = $this->httpClient->post($tokenUrl, [
+                'identity' => $identity,
+                'secret' => $secret,
+            ]);
+        } catch (RuntimeException $e) {
+            throw new RuntimeException('NPM authentication request failed: ' . $e->getMessage());
+        }
+
+        $tokenBody = $tokenResult['body'] ?? null;
+        $token = is_array($tokenBody) ? trim((string) ($tokenBody['token'] ?? '')) : '';
+        if ((int) ($tokenResult['status'] ?? 0) === 200 && $token !== '') {
+            return $token;
+        }
+
+        if (substr_count($secret, '.') === 2) {
+            try {
+                $meResult = $this->httpClient->get(rtrim($baseUrl, '/') . '/api/users/me', [
+                    'Authorization: Bearer ' . $secret,
+                ]);
+
+                if ((int) ($meResult['status'] ?? 0) === 200) {
+                    return $secret;
+                }
+            } catch (RuntimeException) {
+                // Fall through to detailed error.
+            }
+        }
+
+        $detail = $this->extractNpmErrorMessage($tokenResult['body'] ?? null);
+        if ($detail !== '') {
+            throw new RuntimeException('NPM authentication failed: ' . $detail);
+        }
+
+        throw new RuntimeException('NPM authentication failed. Runtime account may have been removed or secret changed. Re-provision from Integrations.');
+    }
+
+    private function resolveNpmUserIdByEmail(string $baseUrl, string $token, string $identity): ?int
+    {
+        $result = $this->httpClient->get(rtrim($baseUrl, '/') . '/api/users', [
+            'Authorization: Bearer ' . $token,
+        ]);
+
+        if ((int) ($result['status'] ?? 0) !== 200) {
+            $me = $this->httpClient->get(rtrim($baseUrl, '/') . '/api/users/me', [
+                'Authorization: Bearer ' . $token,
+            ]);
+
+            if ((int) ($me['status'] ?? 0) !== 200 || !is_array($me['body'] ?? null)) {
+                throw new RuntimeException('Unable to query NPM users for cleanup. Ensure the runtime account has user-management permissions.');
+            }
+
+            $meEmail = strtolower(trim((string) (($me['body']['email'] ?? ''))));
+            $meId = (int) (($me['body']['id'] ?? 0));
+            if ($meEmail === strtolower(trim($identity)) && $meId > 0) {
+                return $meId;
+            }
+
+            return null;
+        }
+
+        $rows = $this->extractNpmCollectionRows($result['body'] ?? null);
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $email = strtolower(trim((string) ($row['email'] ?? '')));
+            if ($email !== strtolower(trim($identity))) {
+                continue;
+            }
+
+            $id = (int) ($row['id'] ?? 0);
+            if ($id > 0) {
+                return $id;
+            }
+        }
+
+        return null;
+    }
+
+    private function deleteNpmProxyHostRecordsForUser(string $baseUrl, string $token, int $userId): void
+    {
+        $result = $this->httpClient->get(rtrim($baseUrl, '/') . '/api/nginx/proxy-hosts', [
+            'Authorization: Bearer ' . $token,
+        ]);
+
+        if ((int) ($result['status'] ?? 0) !== 200) {
+            return;
+        }
+
+        $rows = $this->extractNpmCollectionRows($result['body'] ?? null);
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $ownerId = (int) ($row['owner_user_id'] ?? $row['user_id'] ?? (($row['owner']['id'] ?? 0)));
+            $proxyHostId = (int) ($row['id'] ?? 0);
+            if ($proxyHostId <= 0 || $ownerId !== $userId) {
+                continue;
+            }
+
+            $delete = $this->httpClient->delete(rtrim($baseUrl, '/') . '/api/nginx/proxy-hosts/' . $proxyHostId, [
+                'Authorization: Bearer ' . $token,
+            ]);
+
+            if (!in_array((int) ($delete['status'] ?? 0), [200, 201, 204], true)) {
+                throw new RuntimeException('Failed to remove NPM proxy host record #' . $proxyHostId . ' before deleting runtime account.');
+            }
+        }
+    }
+
+    private function deleteNpmUserById(string $baseUrl, string $token, int $userId): void
+    {
+        $delete = $this->httpClient->delete(rtrim($baseUrl, '/') . '/api/users/' . $userId, [
+            'Authorization: Bearer ' . $token,
+        ]);
+
+        if (!in_array((int) ($delete['status'] ?? 0), [200, 201, 204], true)) {
+            $detail = $this->extractNpmErrorMessage($delete['body'] ?? null);
+            if ($detail === '') {
+                $detail = 'HTTP ' . (int) ($delete['status'] ?? 0);
+            }
+
+            throw new RuntimeException('Failed to remove NPM runtime account: ' . $detail);
+        }
+    }
+
+    /**
+     * @return list<mixed>
+     */
+    private function extractNpmCollectionRows(mixed $body): array
+    {
+        if (is_array($body)) {
+            $isAssoc = array_keys($body) !== range(0, count($body) - 1);
+            if (!$isAssoc) {
+                return $body;
+            }
+
+            foreach (['data', 'result', 'items', 'results'] as $key) {
+                if (is_array($body[$key] ?? null)) {
+                    return $body[$key];
+                }
+            }
+        }
+
+        return [];
     }
 }

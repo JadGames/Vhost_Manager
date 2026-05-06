@@ -24,14 +24,6 @@ final class AppDefaults
             'APP_HTTPS' => 'false',
             'SESSION_NAME' => 'VHMSESSID',
             'SESSION_IDLE_TIMEOUT' => '1800',
-            'ADMIN_USER' => '',
-            'ADMIN_FULL_NAME' => '',
-            'ADMIN_PASSWORD_HASH' => '',
-            'ADMIN_CREATED_AT' => '',
-            'ADMIN_LAST_LOGIN_AT' => '',
-            'USERS_JSON' => '{}',
-            'USERS_META_JSON' => '{}',
-            'DOMAINS_JSON' => '[]',
             'DATA_DIR' => $dataDir,
             'LOG_FILE' => $logsDir . '/app.log',
             'MANAGED_VHOSTS_FILE' => $dataDir . '/vhosts.json',
@@ -45,7 +37,6 @@ final class AppDefaults
             'APACHE_VHOST_TEMPLATE' => '/etc/vhost-manager/vhost.conf.tpl',
             'VHOST_BASE_DOMAIN' => '',
             'CURL_VERIFY_SSL' => 'true',
-            'CF_DOMAINS_JSON' => '[]',
         ];
     }
 
@@ -53,14 +44,72 @@ final class AppDefaults
     {
         $envStorage = trim((string) (getenv('VHM_STORAGE_DIR') ?: ''));
         if ($envStorage !== '') {
-            return rtrim($envStorage, '/');
+            $normalized = rtrim($envStorage, '/');
+            if (self::isUsableStorageDir($normalized)) {
+                return $normalized;
+            }
         }
+
+        $candidates = [];
 
         if (is_dir('/opt/vhost-manager')) {
-            return '/opt/vhost-manager/storage';
+            $candidates[] = '/opt/vhost-manager/storage';
         }
 
-        return dirname(__DIR__, 2) . '/storage';
+        $candidates[] = dirname(__DIR__, 2) . '/storage';
+
+        foreach ($candidates as $candidate) {
+            if (self::isUsableStorageDir($candidate)) {
+                return rtrim($candidate, '/');
+            }
+        }
+
+        $tmpStorage = rtrim(sys_get_temp_dir(), '/') . '/vhost-manager-' . get_current_user();
+        self::isUsableStorageDir($tmpStorage);
+
+        return $tmpStorage;
+    }
+
+    private static function isUsableStorageDir(string $storageDir): bool
+    {
+        $storageDir = rtrim($storageDir, '/');
+        if ($storageDir === '') {
+            return false;
+        }
+
+        if (!is_dir($storageDir) && !@mkdir($storageDir, 0750, true) && !is_dir($storageDir)) {
+            return false;
+        }
+
+        if (!is_writable($storageDir)) {
+            return false;
+        }
+
+        foreach (['data', 'logs'] as $segment) {
+            $path = $storageDir . '/' . $segment;
+            if (!is_dir($path) && !@mkdir($path, 0750, true) && !is_dir($path)) {
+                return false;
+            }
+
+            if (!is_writable($path)) {
+                return false;
+            }
+        }
+
+        $writeSensitiveFiles = [
+            $storageDir . '/data/settings.sqlite',
+            $storageDir . '/data/settings.sqlite-wal',
+            $storageDir . '/data/settings.sqlite-shm',
+            $storageDir . '/data/login_attempts.json',
+        ];
+
+        foreach ($writeSensitiveFiles as $filePath) {
+            if (is_file($filePath) && !is_writable($filePath)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static function defaultAppVersion(): string

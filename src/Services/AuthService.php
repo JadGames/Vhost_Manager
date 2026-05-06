@@ -60,10 +60,6 @@ final class AuthService
 
         try {
             $this->settingsStore->userUpsert(['email' => $identity, 'last_login_at' => $now]);
-
-            if ($isPrimaryAdmin) {
-                $this->settingsStore->setMany(['ADMIN_LAST_LOGIN_AT' => $now]);
-            }
         } catch (RuntimeException) {
             // Non-fatal for auth flow.
         }

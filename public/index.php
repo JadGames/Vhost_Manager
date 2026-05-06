@@ -184,7 +184,7 @@ if ($npmIntegration !== null) {
 $cloudflare = null;
 if ($cfIntegration !== null) {
     $cfConfig = new Config(array_merge($currentSettings, ['CF_ENABLED' => 'true']));
-    $cloudflare = new CloudflareService($cfConfig, $httpClient, $logger);
+    $cloudflare = new CloudflareService($cfConfig, $httpClient, $logger, $settingsStore->domainGetCfMappings());
 }
 
 $vhostService = new VhostService($config, $logger, $vhostRepository, $cloudflare, $npm);
@@ -199,8 +199,10 @@ $logsController = new LogsController($config, $csrf, $settingsStore);
 $route = $_GET['route'] ?? 'overview';
 $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
 
-$isSetupComplete = trim((string) $config->get('ADMIN_USER', '')) !== ''
-    && trim((string) $config->get('ADMIN_PASSWORD_HASH', '')) !== '';
+$primaryAdmin = $settingsStore->userGetPrimary();
+$isSetupComplete = $primaryAdmin !== null
+    && trim((string) ($primaryAdmin['email'] ?? '')) !== ''
+    && trim((string) ($primaryAdmin['password_hash'] ?? '')) !== '';
 
 $setupRoutes = ['setup', 'setup-proxy', 'setup-dns', 'setup-confirm'];
 

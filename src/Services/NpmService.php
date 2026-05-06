@@ -240,8 +240,26 @@ final class NpmService
         $result = $this->http->post($url, ['identity' => $this->identity, 'secret' => $this->secret]);
 
         if ($result['status'] !== 200 || empty($result['body']['token'])) {
-            $this->logger->error('NPM authentication failed', ['status' => $result['status']]);
-            throw new RuntimeException('NPM authentication failed. Check NPM_IDENTITY and NPM_SECRET.');
+            // Support legacy/manual configurations where a bearer token may have been stored as the secret.
+            if (substr_count($this->secret, '.') === 2) {
+                try {
+                    $me = $this->http->get("{$this->baseUrl}/api/users/me", $this->authHeader($this->secret));
+                    if ((int) ($me['status'] ?? 0) === 200) {
+                        $this->token = $this->secret;
+                        return $this->token;
+                    }
+                } catch (RuntimeException) {
+                    // Fall through to detailed error below.
+                }
+            }
+
+            $this->logger->error('NPM authentication failed', ['status' => $result['status'], 'body' => $result['body'] ?? null]);
+            $detail = $this->extractErrorMessage($result['body'] ?? null);
+            if ($detail !== '') {
+                throw new RuntimeException('NPM authentication failed: ' . $detail);
+            }
+
+            throw new RuntimeException('NPM authentication failed. Runtime credentials may be stale; re-provision the integration runtime account.');
         }
 
         $this->token = (string) $result['body']['token'];
@@ -308,5 +326,29 @@ final class NpmService
         $provider = trim((string) ($row['provider'] ?? 'certificate'));
 
         return ucfirst($provider) . ' #' . (int) ($row['id'] ?? 0);
+    }
+
+    private function extractErrorMessage(mixed $body): string
+    {
+        if (is_array($body)) {
+            $nested = trim((string) (($body['error']['message'] ?? '') ?: ''));
+            if ($nested !== '') {
+                return $nested;
+            }
+
+            $top = trim((string) ($body['message'] ?? ''));
+            if ($top !== '') {
+                return $top;
+            }
+
+            $encoded = json_encode($body, JSON_UNESCAPED_SLASHES);
+            return is_string($encoded) ? $encoded : '';
+        }
+
+        if (is_string($body)) {
+            return trim($body);
+        }
+
+        return '';
     }
 }

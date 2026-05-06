@@ -287,7 +287,42 @@
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
             <input type="hidden" name="intent" value="delete">
             <input type="hidden" name="id" id="edit_delete_id">
+            <input type="hidden" name="remove_npm_runtime" id="edit_delete_remove_npm_runtime" value="0">
         </form>
+    </div>
+</dialog>
+
+<!-- ══ DELETE INTEGRATION CONFIRM MODAL ══ -->
+<dialog id="integration-delete-confirm-modal" aria-modal="true" aria-labelledby="integration-delete-confirm-title">
+    <div class="dialog-header">
+        <div class="dialog-header-text">
+            <p class="dialog-title" id="integration-delete-confirm-title">Remove Integration?</p>
+            <p class="dialog-subtitle" id="integration-delete-confirm-subtitle">This action cannot be undone.</p>
+        </div>
+        <button class="dialog-close-btn" type="button" id="integration-delete-confirm-close" aria-label="Close">
+            <i class="fa-solid fa-xmark"></i>
+        </button>
+    </div>
+    <div class="dialog-body">
+        <p id="integration-delete-confirm-message" style="margin:0 0 1rem 0; color:var(--text-2);">
+            Remove this integration from Vhost Manager?
+        </p>
+
+        <div id="integration-delete-npm-extra" hidden>
+            <label class="danger-switch" for="integration-delete-remove-npm-toggle">
+                <input type="checkbox" id="integration-delete-remove-npm-toggle">
+                <span class="danger-switch-track" aria-hidden="true"></span>
+                <span class="danger-switch-label">Also remove the runtime account and related records in NPM</span>
+            </label>
+            <p class="form-hint" style="margin-top:6px;">Requires sufficient NPM permissions for this account.</p>
+        </div>
+
+        <div class="dialog-footer">
+            <button class="btn btn--ghost" type="button" id="integration-delete-confirm-cancel">Cancel</button>
+            <button class="btn btn--danger" type="button" id="integration-delete-confirm-submit">
+                <i class="fa-solid fa-trash"></i> Remove Integration
+            </button>
+        </div>
     </div>
 </dialog>
 
@@ -406,6 +441,12 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
 (function () {
     var addModal   = document.getElementById('add-integration-modal');
     var editModal  = document.getElementById('edit-integration-modal');
+    var deleteConfirmModal = document.getElementById('integration-delete-confirm-modal');
+    var deleteConfirmMessage = document.getElementById('integration-delete-confirm-message');
+    var deleteConfirmSubtitle = document.getElementById('integration-delete-confirm-subtitle');
+    var deleteNpmExtra = document.getElementById('integration-delete-npm-extra');
+    var deleteNpmToggle = document.getElementById('integration-delete-remove-npm-toggle');
+    var deleteNpmHidden = document.getElementById('edit_delete_remove_npm_runtime');
     var testResultModal = document.getElementById('test-result-modal');
     var testResultMessage = document.getElementById('test-result-message');
     var testResultSubtitle = document.getElementById('test-result-subtitle');
@@ -421,6 +462,14 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
     var addProvider = document.getElementById('add_provider');
     var addSubmit  = document.getElementById('add-modal-submit');
     var addSubtitle = document.getElementById('add-modal-subtitle');
+    var editModalDeleteBtn = document.getElementById('edit-modal-delete');
+    var editDeleteForm = document.getElementById('edit-delete-form');
+
+    var deleteConfirmClose = document.getElementById('integration-delete-confirm-close');
+    var deleteConfirmCancel = document.getElementById('integration-delete-confirm-cancel');
+    var deleteConfirmSubmit = document.getElementById('integration-delete-confirm-submit');
+
+    var currentEditIntegration = null;
 
     if (!addModal || !editModal || !addForm || !addProvider || !addSubmit || !addSubtitle) {
         return;
@@ -1024,6 +1073,8 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
                 return;
             }
 
+            currentEditIntegration = integration;
+
             document.getElementById('edit_id').value = id;
             document.getElementById('edit_delete_id').value = id;
             document.getElementById('edit_name').value = integration.name;
@@ -1143,8 +1194,14 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
     });
 
     // ── Close Edit modal ──
-    document.getElementById('edit-modal-close').addEventListener('click', function () { closeDialog(editModal); });
-    document.getElementById('edit-modal-cancel').addEventListener('click', function () { closeDialog(editModal); });
+    document.getElementById('edit-modal-close').addEventListener('click', function () {
+        currentEditIntegration = null;
+        closeDialog(editModal);
+    });
+    document.getElementById('edit-modal-cancel').addEventListener('click', function () {
+        currentEditIntegration = null;
+        closeDialog(editModal);
+    });
 
     // ── Close Test Result modal ──
     var testResultClose = document.getElementById('test-result-close');
@@ -1247,11 +1304,61 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
     }
 
     // ── Delete button ──
-    document.getElementById('edit-modal-delete').addEventListener('click', function () {
-        if (confirm('Remove this integration?')) {
-            document.getElementById('edit-delete-form').submit();
-        }
-    });
+    if (editModalDeleteBtn) {
+        editModalDeleteBtn.addEventListener('click', function () {
+            if (!deleteConfirmModal || !deleteConfirmMessage || !deleteConfirmSubtitle || !editDeleteForm) {
+                return;
+            }
+
+            var integrationName = currentEditIntegration && currentEditIntegration.name
+                ? String(currentEditIntegration.name)
+                : 'this integration';
+            deleteConfirmSubtitle.textContent = 'You are about to remove "' + integrationName + '".';
+            deleteConfirmMessage.textContent = 'Remove this integration from Vhost Manager?';
+
+            var isNpm = !!(currentEditIntegration && currentEditIntegration.provider === 'npm');
+            if (deleteNpmExtra) {
+                deleteNpmExtra.hidden = !isNpm;
+            }
+
+            if (deleteNpmToggle) {
+                deleteNpmToggle.checked = false;
+            }
+
+            if (deleteNpmHidden) {
+                deleteNpmHidden.value = '0';
+            }
+
+            openDialog(deleteConfirmModal);
+        });
+    }
+
+    function closeDeleteConfirmModal() {
+        closeDialog(deleteConfirmModal);
+    }
+
+    if (deleteConfirmClose) {
+        deleteConfirmClose.addEventListener('click', closeDeleteConfirmModal);
+    }
+
+    if (deleteConfirmCancel) {
+        deleteConfirmCancel.addEventListener('click', closeDeleteConfirmModal);
+    }
+
+    if (deleteConfirmSubmit) {
+        deleteConfirmSubmit.addEventListener('click', function () {
+            if (!editDeleteForm) {
+                return;
+            }
+
+            if (deleteNpmHidden && deleteNpmToggle) {
+                deleteNpmHidden.value = deleteNpmToggle.checked ? '1' : '0';
+            }
+
+            closeDeleteConfirmModal();
+            editDeleteForm.submit();
+        });
+    }
 
     // ── Test connection ──
     document.querySelectorAll('[data-test-integration]').forEach(function (btn) {

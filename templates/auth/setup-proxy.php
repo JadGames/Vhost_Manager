@@ -103,7 +103,7 @@ $isStepTwo = $isNpm && (($proxyStep ?? '1') === '2');
 
             <div style="margin-top:20px; display:flex; gap:8px;">
                 <?php if ($isStepTwo): ?>
-                    <button class="btn btn--secondary" type="submit" name="back_step" value="1" style="flex:1;">
+                    <button class="btn btn--secondary" type="button" id="setup-proxy-back-button" style="flex:1;">
                         <i class="fa-solid fa-arrow-left"></i> Back
                     </button>
                 <?php else: ?>
@@ -113,12 +113,12 @@ $isStepTwo = $isNpm && (($proxyStep ?? '1') === '2');
                 <?php endif; ?>
 
                 <?php if (!$isStepTwo): ?>
-                    <button class="btn btn--ghost" type="submit" name="skip" value="1" formnovalidate style="flex:1;" id="proxy-skip-button">
+                    <button class="btn btn--ghost" type="button" formnovalidate style="flex:1;" id="proxy-skip-button">
                         Skip
                     </button>
                 <?php endif; ?>
 
-                <button class="btn btn--primary" type="submit" style="flex:1;">
+                <button class="btn btn--primary" type="submit" style="flex:1;" id="proxy-primary-submit">
                     <span id="proxy-submit-label"><?= $isStepTwo ? 'Continue' : 'Test &amp; Continue' ?></span> <i class="fa-solid fa-arrow-right"></i>
                 </button>
             </div>
@@ -152,6 +152,8 @@ $isStepTwo = $isNpm && (($proxyStep ?? '1') === '2');
     var npmFields = document.getElementById('proxy-provider-npm-fields');
     var genericNote = document.getElementById('proxy-provider-generic-note');
     var submitLabel = document.getElementById('proxy-submit-label');
+    var primarySubmit = document.getElementById('proxy-primary-submit');
+    var backButton = document.getElementById('setup-proxy-back-button');
     var form = document.querySelector('form[action="/?route=setup-proxy"]');
     var skipButton = document.getElementById('proxy-skip-button');
     var skipConfirmModal = document.getElementById('setup-proxy-skip-confirm-modal');
@@ -159,8 +161,17 @@ $isStepTwo = $isNpm && (($proxyStep ?? '1') === '2');
     var skipConfirmCancel = document.getElementById('setup-proxy-skip-cancel');
     var skipConfirmConfirm = document.getElementById('setup-proxy-skip-confirm');
 
-    if (!providerSelect || !providerHint || !npmFields || !genericNote || !submitLabel || !form) {
+    if (!providerSelect || !providerHint || !npmFields || !genericNote || !submitLabel || !form || !primarySubmit) {
         return;
+    }
+
+    function submitWithHiddenAction(name, value) {
+        var hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = name;
+        hidden.value = value;
+        form.appendChild(hidden);
+        form.submit();
     }
 
     function openDialog(dialogEl) {
@@ -219,9 +230,30 @@ $isStepTwo = $isNpm && (($proxyStep ?? '1') === '2');
     providerSelect.addEventListener('change', applyProviderState);
     applyProviderState();
 
+    form.addEventListener('keydown', function (event) {
+        var target = event.target;
+        if (!target || target.tagName === 'TEXTAREA') {
+            return;
+        }
+
+        if (event.key !== 'Enter') {
+            return;
+        }
+
+        event.preventDefault();
+        primarySubmit.click();
+    });
+
+    if (backButton) {
+        backButton.addEventListener('click', function () {
+            submitWithHiddenAction('back_step', '1');
+        });
+    }
+
     if (skipButton && skipConfirmModal) {
         skipButton.addEventListener('click', function (event) {
             if (!hasEnteredProxyData()) {
+                submitWithHiddenAction('skip', '1');
                 return;
             }
 

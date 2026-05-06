@@ -20,14 +20,18 @@ final class CloudflareService
     public function __construct(
         Config $config,
         private readonly HttpClient $http,
-        private readonly Logger $logger
+        private readonly Logger $logger,
+        array $domainMappings = []
     ) {
         $this->apiToken  = (string) $config->get('CF_API_TOKEN', '');
         $this->zoneId    = (string) $config->get('CF_ZONE_ID', '');
         $this->recordIp  = (string) $config->get('CF_RECORD_IP', '');
         $this->proxied   = $config->getBool('CF_PROXIED', false);
         $this->ttl       = max(1, (int) $config->get('CF_TTL', 120));
-        $this->domainMappings = $this->parseDomainMappings((string) $config->get('CF_DOMAINS_JSON', ''));
+        $normalizedMappings = $this->normalizeDomainMappings($domainMappings);
+        $this->domainMappings = $normalizedMappings !== []
+            ? $normalizedMappings
+            : $this->parseDomainMappings((string) $config->get('CF_DOMAINS_JSON', ''));
     }
 
     /**
@@ -226,6 +230,32 @@ final class CloudflareService
 
         $rows = [];
         foreach ($decoded as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $domain = strtolower(trim((string) ($entry['domain'] ?? '')));
+            $zoneId = trim((string) ($entry['zone_id'] ?? ''));
+            $apiToken = trim((string) ($entry['api_token'] ?? ''));
+
+            if ($domain === '' || $zoneId === '' || $apiToken === '') {
+                continue;
+            }
+
+            $rows[] = ['domain' => $domain, 'zone_id' => $zoneId, 'api_token' => $apiToken];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @param list<array{domain:string,zone_id:string,api_token:string}> $mappings
+     * @return list<array{domain:string,zone_id:string,api_token:string}>
+     */
+    private function normalizeDomainMappings(array $mappings): array
+    {
+        $rows = [];
+        foreach ($mappings as $entry) {
             if (!is_array($entry)) {
                 continue;
             }

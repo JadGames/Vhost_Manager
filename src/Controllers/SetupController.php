@@ -404,7 +404,7 @@ final class SetupController extends BaseController
             }
 
             try {
-                $serviceAccount = $this->provisionNpmServiceAccount($npmBaseUrl, $npmAdminIdentity, $npmAdminSecret);
+                $serviceAccount = $this->resolveSetupNpmServiceAccount($name, $npmBaseUrl, $npmAdminIdentity, $npmAdminSecret);
             } catch (RuntimeException $e) {
                 Session::setFieldErrors([
                     'npm_step_1' => $e->getMessage(),
@@ -609,11 +609,24 @@ final class SetupController extends BaseController
         }
 
         $settings = $pendingSetup;
-        if (trim((string) ($settings['ADMIN_CREATED_AT'] ?? '')) === '') {
-            $settings['ADMIN_CREATED_AT'] = date('c');
+        unset(
+            $settings['ADMIN_USER'],
+            $settings['ADMIN_FULL_NAME'],
+            $settings['ADMIN_PASSWORD_HASH'],
+            $settings['ADMIN_CREATED_AT'],
+            $settings['ADMIN_LAST_LOGIN_AT'],
+            $settings['USERS_JSON'],
+            $settings['USERS_META_JSON'],
+            $settings['DOMAINS_JSON'],
+            $settings['CF_DOMAINS_JSON']
+        );
+
+        $adminSettings = $pendingSetup;
+        if (trim((string) ($adminSettings['ADMIN_CREATED_AT'] ?? '')) === '') {
+            $adminSettings['ADMIN_CREATED_AT'] = date('c');
         }
-        if (trim((string) ($settings['ADMIN_FULL_NAME'] ?? '')) === '') {
-            $settings['ADMIN_FULL_NAME'] = (string) ($settings['ADMIN_USER'] ?? 'Admin User');
+        if (trim((string) ($adminSettings['ADMIN_FULL_NAME'] ?? '')) === '') {
+            $adminSettings['ADMIN_FULL_NAME'] = (string) ($adminSettings['ADMIN_USER'] ?? 'Admin User');
         }
 
         $proxyIntegration = isset($_SESSION['setup_pending_proxy']) && is_array($_SESSION['setup_pending_proxy'])
@@ -626,16 +639,16 @@ final class SetupController extends BaseController
             $this->settingsStore->setMany($settings);
 
             // Write admin to the users table as the primary user.
-            $adminEmail = strtolower(trim((string) ($settings['ADMIN_USER'] ?? '')));
+            $adminEmail = strtolower(trim((string) ($adminSettings['ADMIN_USER'] ?? '')));
             if ($adminEmail !== '') {
                 $this->settingsStore->userUpsert([
                     'email'        => $adminEmail,
-                    'password_hash'=> (string) ($settings['ADMIN_PASSWORD_HASH'] ?? ''),
-                    'full_name'    => (string) ($settings['ADMIN_FULL_NAME'] ?? ''),
+                    'password_hash'=> (string) ($adminSettings['ADMIN_PASSWORD_HASH'] ?? ''),
+                    'full_name'    => (string) ($adminSettings['ADMIN_FULL_NAME'] ?? ''),
                     'account_type' => 'admin',
                     'is_primary'   => 1,
                     'active'       => 1,
-                    'created_at'   => (string) ($settings['ADMIN_CREATED_AT'] ?? date('c')),
+                    'created_at'   => (string) ($adminSettings['ADMIN_CREATED_AT'] ?? date('c')),
                     'last_login_at'=> '',
                 ]);
             }
@@ -691,10 +704,11 @@ final class SetupController extends BaseController
             $_SESSION['setup_pending'],
             $_SESSION['setup_pending_admin_password'],
             $_SESSION['setup_pending_proxy'],
-            $_SESSION['setup_pending_dns']
+            $_SESSION['setup_pending_dns'],
+            $_SESSION['setup_npm_accounts']
         );
 
-        $adminEmail = strtolower(trim((string) ($settings['ADMIN_USER'] ?? '')));
+        $adminEmail = strtolower(trim((string) ($adminSettings['ADMIN_USER'] ?? '')));
         Session::login($adminEmail);
 
         Session::setFlash('success', 'Setup complete and you are now logged in!');
@@ -703,10 +717,9 @@ final class SetupController extends BaseController
 
     private function isSetupComplete(): bool
     {
-        $user = trim((string) $this->config->get('ADMIN_USER', ''));
-        $hash = trim((string) $this->config->get('ADMIN_PASSWORD_HASH', ''));
+        $primary = $this->settingsStore->userGetPrimary();
 
-        return $user !== '' && $hash !== '';
+        return $primary !== null && trim((string) ($primary['password_hash'] ?? '')) !== '';
     }
 
     /**
@@ -794,6 +807,74 @@ final class SetupController extends BaseController
         }
 
         return in_array((int) ($result['status'] ?? 0), [200, 201], true);
+    }
+
+    /**
+     * @return array{identity:string,secret:string}
+     */
+    private function resolveSetupNpmServiceAccount(string $integrationName, string $baseUrl, string $adminIdentity, string $adminSecret): array
+    {
+        $cached = $this->getCachedSetupNpmServiceAccount($integrationName, $baseUrl);
+        if ($cached !== null && $this->requestNpmToken($baseUrl, $cached['identity'], $cached['secret']) !== null) {
+            return $cached;
+        }
+
+        $serviceAccount = $this->provisionNpmServiceAccount($baseUrl, $adminIdentity, $adminSecret);
+        $this->cacheSetupNpmServiceAccount($integrationName, $baseUrl, $serviceAccount);
+
+        return $serviceAccount;
+    }
+
+    /**
+     * @return array{identity:string,secret:string}|null
+     */
+    private function getCachedSetupNpmServiceAccount(string $integrationName, string $baseUrl): ?array
+    {
+        $cache = $_SESSION['setup_npm_accounts'] ?? null;
+        if (!is_array($cache)) {
+            return null;
+        }
+
+        $key = $this->setupNpmAccountCacheKey($integrationName, $baseUrl);
+        $account = $cache[$key] ?? null;
+        if (!is_array($account)) {
+            return null;
+        }
+
+        $identity = trim((string) ($account['identity'] ?? ''));
+        $secret = trim((string) ($account['secret'] ?? ''));
+        if ($identity === '' || $secret === '') {
+            return null;
+        }
+
+        return [
+            'identity' => $identity,
+            'secret' => $secret,
+        ];
+    }
+
+    /**
+     * @param array{identity:string,secret:string} $account
+     */
+    private function cacheSetupNpmServiceAccount(string $integrationName, string $baseUrl, array $account): void
+    {
+        $cache = $_SESSION['setup_npm_accounts'] ?? [];
+        if (!is_array($cache)) {
+            $cache = [];
+        }
+
+        $cache[$this->setupNpmAccountCacheKey($integrationName, $baseUrl)] = [
+            'identity' => $account['identity'],
+            'secret' => $account['secret'],
+            'cached_at' => date('c'),
+        ];
+
+        $_SESSION['setup_npm_accounts'] = $cache;
+    }
+
+    private function setupNpmAccountCacheKey(string $integrationName, string $baseUrl): string
+    {
+        return strtolower(trim($integrationName)) . '|' . strtolower(rtrim(trim($baseUrl), '/'));
     }
 
     /**

@@ -57,13 +57,27 @@ final class SettingsStore
         $pdo->exec(
             'CREATE TABLE IF NOT EXISTS domains (
                 domain TEXT PRIMARY KEY,
-                cf_zone_id TEXT NOT NULL DEFAULT \'\',
-                cf_api_token TEXT NOT NULL DEFAULT \'\',
-                cf_record_ip TEXT NOT NULL DEFAULT \'\',
-                cf_proxied INTEGER NOT NULL DEFAULT 0,
-                cf_ttl INTEGER NOT NULL DEFAULT 120,
+                dns_integration_id TEXT NOT NULL DEFAULT \'\',
                 updated_at TEXT NOT NULL DEFAULT \'\'
             )'
+        );
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS cloudflare_domain_settings (
+                domain TEXT NOT NULL,
+                dns_integration_id TEXT NOT NULL,
+                zone_id TEXT NOT NULL DEFAULT \'\',
+                api_token TEXT NOT NULL DEFAULT \'\',
+                record_ip TEXT NOT NULL DEFAULT \'\',
+                proxied INTEGER NOT NULL DEFAULT 0,
+                ttl INTEGER NOT NULL DEFAULT 120,
+                updated_at TEXT NOT NULL DEFAULT \'\'
+            )'
+        );
+
+        $pdo->exec(
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_cf_domain_settings_domain_integration
+             ON cloudflare_domain_settings (domain, dns_integration_id)'
         );
 
         $this->runMigrations();
@@ -421,7 +435,16 @@ final class SettingsStore
      */
     public function domainGetAll(): array
     {
-        $stmt = $this->pdo()->query('SELECT * FROM domains ORDER BY domain ASC');
+        $stmt = $this->pdo()->query(
+            'SELECT d.domain, d.dns_integration_id, d.updated_at,
+                    c.zone_id AS cf_zone_id, c.api_token AS cf_api_token,
+                    c.record_ip AS cf_record_ip, c.proxied AS cf_proxied,
+                    c.ttl AS cf_ttl
+             FROM domains d
+             LEFT JOIN cloudflare_domain_settings c
+               ON c.domain = d.domain AND c.dns_integration_id = d.dns_integration_id
+             ORDER BY d.domain ASC'
+        );
         if ($stmt === false) {
             return [];
         }
@@ -439,7 +462,16 @@ final class SettingsStore
      */
     public function domainGet(string $domain): ?array
     {
-        $stmt = $this->pdo()->prepare('SELECT * FROM domains WHERE domain = :domain');
+                $stmt = $this->pdo()->prepare(
+                        'SELECT d.domain, d.dns_integration_id, d.updated_at,
+                                        c.zone_id AS cf_zone_id, c.api_token AS cf_api_token,
+                                        c.record_ip AS cf_record_ip, c.proxied AS cf_proxied,
+                                        c.ttl AS cf_ttl
+                         FROM domains d
+                         LEFT JOIN cloudflare_domain_settings c
+                             ON c.domain = d.domain AND c.dns_integration_id = d.dns_integration_id
+                         WHERE d.domain = :domain'
+                );
         $stmt->execute([':domain' => strtolower(trim($domain))]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -456,33 +488,101 @@ final class SettingsStore
             throw new RuntimeException('Domain is required.');
         }
 
-        $stmt = $this->pdo()->prepare(
-            'INSERT INTO domains (domain, cf_zone_id, cf_api_token, cf_record_ip, cf_proxied, cf_ttl, updated_at)
-             VALUES (:domain, :cf_zone_id, :cf_api_token, :cf_record_ip, :cf_proxied, :cf_ttl, :updated_at)
-             ON CONFLICT(domain) DO UPDATE SET
-                cf_zone_id = excluded.cf_zone_id,
-                cf_api_token = excluded.cf_api_token,
-                cf_record_ip = excluded.cf_record_ip,
-                cf_proxied = excluded.cf_proxied,
-                cf_ttl = excluded.cf_ttl,
-                updated_at = excluded.updated_at'
-        );
+        $dnsIntegrationId = trim((string) ($data['dns_integration_id'] ?? ''));
+        $zoneId = trim((string) ($data['cf_zone_id'] ?? ''));
+        $apiToken = trim((string) ($data['cf_api_token'] ?? ''));
+        $hasCloudflareDetails = ($zoneId !== '' || $apiToken !== '');
+        if ($hasCloudflareDetails && $dnsIntegrationId === '') {
+            $dnsIntegrationId = $this->firstIntegrationIdByProvider('cloudflare');
+            if ($dnsIntegrationId === '') {
+                $dnsIntegrationId = 'cloudflare_enabled';
+                $this->integrationUpsert([
+                    'id' => $dnsIntegrationId,
+                    'name' => 'Cloudflare',
+                    'provider' => 'cloudflare',
+                    'category' => 'dns',
+                    'settings' => [],
+                ]);
+            }
+        }
 
-        $stmt->execute([
-            ':domain' => $domain,
-            ':cf_zone_id' => (string) ($data['cf_zone_id'] ?? ''),
-            ':cf_api_token' => (string) ($data['cf_api_token'] ?? ''),
-            ':cf_record_ip' => (string) ($data['cf_record_ip'] ?? ''),
-            ':cf_proxied' => (int) (bool) ($data['cf_proxied'] ?? false),
-            ':cf_ttl' => max(1, (int) ($data['cf_ttl'] ?? 120)),
-            ':updated_at' => date('c'),
-        ]);
+        if ($hasCloudflareDetails && $dnsIntegrationId === '') {
+            throw new RuntimeException('Cloudflare details require an enabled Cloudflare DNS integration.');
+        }
+
+        $pdo = $this->pdo();
+        $pdo->beginTransaction();
+
+        try {
+            $stmt = $pdo->prepare(
+                'INSERT INTO domains (domain, dns_integration_id, updated_at)
+                 VALUES (:domain, :dns_integration_id, :updated_at)
+                 ON CONFLICT(domain) DO UPDATE SET
+                    dns_integration_id = excluded.dns_integration_id,
+                    updated_at = excluded.updated_at'
+            );
+
+            $stmt->execute([
+                ':domain' => $domain,
+                ':dns_integration_id' => $dnsIntegrationId,
+                ':updated_at' => date('c'),
+            ]);
+
+            $cfDelete = $pdo->prepare('DELETE FROM cloudflare_domain_settings WHERE domain = :domain');
+            $cfDelete->execute([':domain' => $domain]);
+
+            if ($hasCloudflareDetails && $dnsIntegrationId !== '') {
+                $cfStmt = $pdo->prepare(
+                    'INSERT INTO cloudflare_domain_settings
+                        (domain, dns_integration_id, zone_id, api_token, record_ip, proxied, ttl, updated_at)
+                     VALUES
+                        (:domain, :dns_integration_id, :zone_id, :api_token, :record_ip, :proxied, :ttl, :updated_at)
+                     ON CONFLICT(domain, dns_integration_id) DO UPDATE SET
+                        zone_id = excluded.zone_id,
+                        api_token = excluded.api_token,
+                        record_ip = excluded.record_ip,
+                        proxied = excluded.proxied,
+                        ttl = excluded.ttl,
+                        updated_at = excluded.updated_at'
+                );
+
+                $cfStmt->execute([
+                    ':domain' => $domain,
+                    ':dns_integration_id' => $dnsIntegrationId,
+                    ':zone_id' => $zoneId,
+                    ':api_token' => $apiToken,
+                    ':record_ip' => (string) ($data['cf_record_ip'] ?? ''),
+                    ':proxied' => (int) (bool) ($data['cf_proxied'] ?? false),
+                    ':ttl' => max(1, (int) ($data['cf_ttl'] ?? 120)),
+                    ':updated_at' => date('c'),
+                ]);
+            }
+
+            $pdo->commit();
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            throw new RuntimeException('Failed to save domain settings.', 0, $e);
+        }
     }
 
     public function domainDelete(string $domain): void
     {
-        $stmt = $this->pdo()->prepare('DELETE FROM domains WHERE domain = :domain');
-        $stmt->execute([':domain' => strtolower(trim($domain))]);
+        $normalized = strtolower(trim($domain));
+        $pdo = $this->pdo();
+        $pdo->beginTransaction();
+
+        try {
+            $cfStmt = $pdo->prepare('DELETE FROM cloudflare_domain_settings WHERE domain = :domain');
+            $cfStmt->execute([':domain' => $normalized]);
+
+            $stmt = $pdo->prepare('DELETE FROM domains WHERE domain = :domain');
+            $stmt->execute([':domain' => $normalized]);
+
+            $pdo->commit();
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            throw new RuntimeException('Failed to delete domain settings.', 0, $e);
+        }
     }
 
     /**
@@ -492,8 +592,13 @@ final class SettingsStore
     public function domainGetCfMappings(): array
     {
         $stmt = $this->pdo()->query(
-            "SELECT domain, cf_zone_id AS zone_id, cf_api_token AS api_token FROM domains
-             WHERE cf_zone_id != '' AND cf_api_token != '' ORDER BY domain ASC"
+                        "SELECT d.domain, c.zone_id AS zone_id, c.api_token AS api_token
+                         FROM domains d
+                         JOIN cloudflare_domain_settings c
+                             ON c.domain = d.domain AND c.dns_integration_id = d.dns_integration_id
+                         JOIN integrations i ON i.id = d.dns_integration_id
+                         WHERE i.provider = 'cloudflare' AND c.zone_id != '' AND c.api_token != ''
+                         ORDER BY d.domain ASC"
         );
         if ($stmt === false) {
             return [];
@@ -517,10 +622,7 @@ final class SettingsStore
      */
     public function syncCfDomainsJson(): void
     {
-        $mappings = $this->domainGetCfMappings();
-        $this->setMany([
-            'CF_DOMAINS_JSON' => json_encode($mappings, JSON_UNESCAPED_SLASHES) ?: '[]',
-        ]);
+        // No-op: Cloudflare mappings now come directly from relational tables.
     }
 
     // =========================================================================
@@ -583,6 +685,7 @@ final class SettingsStore
 
         $result = [
             'domain' => (string) $row['domain'],
+            'dns_integration_id' => (string) ($row['dns_integration_id'] ?? ''),
             'updated_at' => (string) $row['updated_at'],
         ];
 
@@ -605,16 +708,161 @@ final class SettingsStore
 
     private function runMigrations(): void
     {
-        $done = $this->get('_schema_v2_migrated');
-        if ($done !== null) {
+        if ($this->get('_schema_v2_migrated') === null) {
+            $this->migrateLegacyUsers();
+            $this->migrateLegacyIntegrations();
+            $this->migrateLegacyDomains();
+
+            $this->setMany(['_schema_v2_migrated' => date('c')]);
+        }
+
+        if ($this->get('_schema_v3_domains_normalized') === null) {
+            $this->migrateDomainsToIntegrationScopedTables();
+            $this->setMany(['_schema_v3_domains_normalized' => date('c')]);
+        }
+
+        if ($this->get('_schema_v3_settings_trimmed') === null) {
+            $this->trimDeprecatedSettingsKeys();
+            $this->setMany(['_schema_v3_settings_trimmed' => date('c')]);
+        }
+    }
+
+    private function migrateDomainsToIntegrationScopedTables(): void
+    {
+        $pdo = $this->pdo();
+
+        if (!$this->columnExists('domains', 'dns_integration_id')) {
+            $pdo->exec("ALTER TABLE domains ADD COLUMN dns_integration_id TEXT NOT NULL DEFAULT ''");
+        }
+
+        $pdo->exec(
+            'CREATE INDEX IF NOT EXISTS idx_domains_dns_integration
+             ON domains (dns_integration_id)'
+        );
+
+        $cloudflareIntegrationId = $this->ensureCloudflareIntegrationForDomainData();
+        if ($cloudflareIntegrationId === '') {
             return;
         }
 
-        $this->migrateLegacyUsers();
-        $this->migrateLegacyIntegrations();
-        $this->migrateLegacyDomains();
+        if ($this->columnExists('domains', 'cf_zone_id') && $this->columnExists('domains', 'cf_api_token')) {
+            $stmt = $pdo->query(
+                "SELECT domain, cf_zone_id, cf_api_token, cf_record_ip, cf_proxied, cf_ttl, updated_at
+                 FROM domains
+                 WHERE cf_zone_id != '' OR cf_api_token != ''"
+            );
 
-        $this->setMany(['_schema_v2_migrated' => date('c')]);
+            if ($stmt !== false) {
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $domain = strtolower(trim((string) ($row['domain'] ?? '')));
+                    if ($domain === '') {
+                        continue;
+                    }
+
+                    $upsert = $pdo->prepare(
+                        'INSERT INTO cloudflare_domain_settings
+                            (domain, dns_integration_id, zone_id, api_token, record_ip, proxied, ttl, updated_at)
+                         VALUES
+                            (:domain, :dns_integration_id, :zone_id, :api_token, :record_ip, :proxied, :ttl, :updated_at)
+                         ON CONFLICT(domain, dns_integration_id) DO UPDATE SET
+                            zone_id = excluded.zone_id,
+                            api_token = excluded.api_token,
+                            record_ip = excluded.record_ip,
+                            proxied = excluded.proxied,
+                            ttl = excluded.ttl,
+                            updated_at = excluded.updated_at'
+                    );
+
+                    $upsert->execute([
+                        ':domain' => $domain,
+                        ':dns_integration_id' => $cloudflareIntegrationId,
+                        ':zone_id' => (string) ($row['cf_zone_id'] ?? ''),
+                        ':api_token' => (string) ($row['cf_api_token'] ?? ''),
+                        ':record_ip' => (string) ($row['cf_record_ip'] ?? ''),
+                        ':proxied' => (int) (bool) ($row['cf_proxied'] ?? false),
+                        ':ttl' => max(1, (int) ($row['cf_ttl'] ?? 120)),
+                        ':updated_at' => (string) ($row['updated_at'] ?? date('c')),
+                    ]);
+
+                    $link = $pdo->prepare('UPDATE domains SET dns_integration_id = :dns_integration_id WHERE domain = :domain');
+                    $link->execute([
+                        ':dns_integration_id' => $cloudflareIntegrationId,
+                        ':domain' => $domain,
+                    ]);
+                }
+            }
+        }
+    }
+
+    private function trimDeprecatedSettingsKeys(): void
+    {
+        $this->deleteKeys([
+            'ADMIN_USER',
+            'ADMIN_FULL_NAME',
+            'ADMIN_PASSWORD_HASH',
+            'ADMIN_CREATED_AT',
+            'ADMIN_LAST_LOGIN_AT',
+            'USERS_JSON',
+            'USERS_META_JSON',
+            'DOMAINS_JSON',
+            'CF_DOMAINS_JSON',
+        ]);
+    }
+
+    private function ensureCloudflareIntegrationForDomainData(): string
+    {
+        $existing = $this->firstIntegrationIdByProvider('cloudflare');
+        if ($existing !== '') {
+            return $existing;
+        }
+
+        if (!$this->columnExists('domains', 'cf_zone_id') || !$this->columnExists('domains', 'cf_api_token')) {
+            return '';
+        }
+
+        $stmt = $this->pdo()->query(
+            "SELECT 1 FROM domains WHERE (cf_zone_id != '' OR cf_api_token != '') LIMIT 1"
+        );
+
+        if ($stmt === false || $stmt->fetchColumn() === false) {
+            return '';
+        }
+
+        $id = 'cloudflare_enabled';
+        $this->integrationUpsert([
+            'id' => $id,
+            'name' => 'Cloudflare',
+            'provider' => 'cloudflare',
+            'category' => 'dns',
+            'settings' => [],
+        ]);
+
+        return $id;
+    }
+
+    private function firstIntegrationIdByProvider(string $provider): string
+    {
+        $stmt = $this->pdo()->prepare('SELECT id FROM integrations WHERE provider = :provider ORDER BY updated_at DESC, created_at DESC LIMIT 1');
+        $stmt->execute([':provider' => trim($provider)]);
+        $value = $stmt->fetchColumn();
+
+        return is_string($value) ? $value : '';
+    }
+
+    private function columnExists(string $table, string $column): bool
+    {
+        $stmt = $this->pdo()->query('PRAGMA table_info(' . $table . ')');
+        if ($stmt === false) {
+            return false;
+        }
+
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            if (strcasecmp((string) ($row['name'] ?? ''), $column) === 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function migrateLegacyUsers(): void

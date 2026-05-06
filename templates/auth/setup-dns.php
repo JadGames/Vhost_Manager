@@ -45,10 +45,10 @@
                 <a href="/?route=setup-proxy" class="btn btn--secondary" style="flex:1; text-align:center; text-decoration:none;">
                     <i class="fa-solid fa-arrow-left"></i> Back
                 </a>
-                <button class="btn btn--ghost" type="submit" name="skip" value="1" formnovalidate style="flex:1;">
+                <button class="btn btn--ghost" type="button" formnovalidate style="flex:1;" id="dns-skip-button">
                     Skip
                 </button>
-                <button class="btn btn--primary" type="submit" style="flex:1;">
+                <button class="btn btn--primary" type="submit" style="flex:1;" id="dns-primary-submit">
                     Enable &amp; Continue <i class="fa-solid fa-arrow-right"></i>
                 </button>
             </div>
@@ -60,9 +60,21 @@
 (function () {
     var providerSelect = document.getElementById('dns_provider');
     var providerHint = document.getElementById('dns_provider_hint');
+    var form = document.querySelector('form[action="/?route=setup-dns"]');
+    var primarySubmit = document.getElementById('dns-primary-submit');
+    var skipButton = document.getElementById('dns-skip-button');
 
-    if (!providerSelect || !providerHint) {
+    if (!providerSelect || !providerHint || !form || !primarySubmit) {
         return;
+    }
+
+    function submitWithHiddenAction(name, value) {
+        var hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = name;
+        hidden.value = value;
+        form.appendChild(hidden);
+        form.submit();
     }
 
     function applyProviderState() {
@@ -72,5 +84,25 @@
 
     providerSelect.addEventListener('change', applyProviderState);
     applyProviderState();
+
+    form.addEventListener('keydown', function (event) {
+        var target = event.target;
+        if (!target || target.tagName === 'TEXTAREA') {
+            return;
+        }
+
+        if (event.key !== 'Enter') {
+            return;
+        }
+
+        event.preventDefault();
+        primarySubmit.click();
+    });
+
+    if (skipButton) {
+        skipButton.addEventListener('click', function () {
+            submitWithHiddenAction('skip', '1');
+        });
+    }
 })();
 </script>

@@ -12,6 +12,7 @@ use App\Core\Config;
 use App\Core\Session;
 use App\Security\Csrf;
 use App\Security\RateLimiter;
+use App\Security\SecretEncryption;
 use App\Services\AuthService;
 use App\Services\ApacheModulesService;
 use App\Services\CloudflareService;
@@ -41,7 +42,15 @@ spl_autoload_register(static function (string $class): void {
 });
 
 $defaultSettings = AppDefaults::values();
-$settingsStore = new SettingsStore((string) $defaultSettings['SETTINGS_DB_FILE']);
+
+$crypto = null;
+$secretKeyHex = trim((string) (getenv('VHM_SECRET_KEY') ?: ''));
+if ($secretKeyHex !== '') {
+    $crypto = new SecretEncryption($secretKeyHex);
+}
+unset($secretKeyHex);
+
+$settingsStore = new SettingsStore((string) $defaultSettings['SETTINGS_DB_FILE'], $crypto);
 $settingsStore->initialize();
 
 if ($settingsStore->isEmpty()) {
@@ -193,7 +202,7 @@ $vhostService = new VhostService($config, $logger, $vhostRepository, $cloudflare
 $authController = new AuthController($config, $authService, $csrf, $settingsStore);
 $setupController = new SetupController($config, $csrf, $settingsStore, $httpClient);
 $vhostController = new VhostController($config, $csrf, $vhostService, $apacheModulesService, $settingsStore);
-$settingsController = new SettingsController($config, $csrf, $settingsStore, $apacheModulesService, $httpClient);
+$settingsController = new SettingsController($config, $csrf, $settingsStore, $apacheModulesService, $httpClient, $logger);
 $logsController = new LogsController($config, $csrf, $settingsStore);
 
 $route = $_GET['route'] ?? 'overview';
@@ -242,6 +251,14 @@ try {
             $setupController->showDns();
             break;
 
+        case 'setup-domain':
+            if ($method === 'POST') {
+                $setupController->completeDomain();
+                break;
+            }
+            $setupController->showDomain();
+            break;
+
         case 'setup-confirm':
             if ($method === 'POST') {
                 $setupController->completeConfirm();
@@ -265,6 +282,15 @@ try {
             }
             header('Location: /?route=dashboard');
             exit;
+            break;
+
+        case 'domains-quick-add':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $vhostController->quickAddDomain();
+                break;
+            }
+            http_response_code(405);
             break;
 
         case 'create-vhost':
@@ -400,14 +426,24 @@ try {
             break;
 
         case 'settings-users':
-            Session::requireAuth();
+            Session::requireAdmin();
             $settingsController->showUsers();
             break;
 
         case 'settings-users-action':
-            Session::requireAuth();
+            Session::requireAdmin();
             if ($method === 'POST') {
                 $settingsController->usersAction();
+                break;
+            }
+            header('Location: /?route=settings-users');
+            exit;
+            break;
+
+        case 'settings-users-role-save':
+            Session::requireAdmin();
+            if ($method === 'POST') {
+                $settingsController->usersRoleSaveAjaxAction();
                 break;
             }
             header('Location: /?route=settings-users');
@@ -489,6 +525,46 @@ try {
             exit;
             break;
 
+        case 'notifications-poll':
+            Session::requireAuth();
+            if ($method === 'GET') {
+                $settingsController->notificationsPollAction();
+                break;
+            }
+            header('Location: /?route=dashboard');
+            exit;
+            break;
+
+        case 'notifications-mark-read':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $settingsController->notificationsMarkReadAction();
+                break;
+            }
+            header('Location: /?route=dashboard');
+            exit;
+            break;
+
+        case 'notifications-delete':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $settingsController->notificationsDeleteAction();
+                break;
+            }
+            header('Location: /?route=dashboard');
+            exit;
+            break;
+
+        case 'notifications-clear-all':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $settingsController->notificationsClearAllAction();
+                break;
+            }
+            header('Location: /?route=dashboard');
+            exit;
+            break;
+
         case 'settings-npm-ssl-save':
             Session::requireAuth();
             if ($method === 'POST') {
@@ -510,12 +586,12 @@ try {
             break;
 
         case 'logs':
-            Session::requireAuth();
+            Session::requireAdmin();
             $logsController->show();
             break;
 
         case 'logs-clear':
-            Session::requireAuth();
+            Session::requireAdmin();
             if ($method === 'POST') {
                 $logsController->clear();
                 break;

@@ -87,6 +87,237 @@
     if (sidebarBtn) sidebarBtn.addEventListener('click', toggleSidebar);
     if (topbarBtn)  topbarBtn.addEventListener('click', toggleSidebar);
 
+    /* Settings nav group toggle */
+    var navSettingsToggle = document.getElementById('navSettingsToggle');
+    var navGroupSettings  = document.getElementById('navGroupSettings');
+    if (navSettingsToggle && navGroupSettings) {
+        navSettingsToggle.addEventListener('click', function () {
+            var isOpen = navGroupSettings.classList.toggle('is-open');
+            navSettingsToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+
+            var settingsUrl = navSettingsToggle.getAttribute('data-settings-url') || '/?route=settings';
+            window.location.href = settingsUrl;
+        });
+    }
+
+    /* Notifications panel + polling */
+    var notificationsWrap   = document.getElementById('notificationsWrap');
+    var notificationsToggle = document.getElementById('notificationsToggle');
+    var notificationsPanel  = document.getElementById('notificationsPanel');
+    var notificationsList   = document.getElementById('notificationsList');
+    var notificationsDot    = document.getElementById('notificationsDot');
+    var notificationsClearAll = document.getElementById('notificationsClearAll');
+
+    function formatTime(iso) {
+        if (!iso) {
+            return '';
+        }
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) {
+            return String(iso);
+        }
+        return d.toLocaleString();
+    }
+
+    function renderNotifications(items) {
+        if (!notificationsList) {
+            return;
+        }
+        if (!Array.isArray(items) || items.length === 0) {
+            notificationsList.innerHTML = '<div class="notifications-empty">No notifications yet.</div>';
+            return;
+        }
+
+        var firstActionableFound = false;
+        var html = items.map(function (item) {
+            var cls = item && item.is_read ? 'is-read' : 'is-unread';
+            if (item && item.actionable && !firstActionableFound) {
+                cls += ' notifications-item--actionable';
+                firstActionableFound = true;
+            }
+            var message = String((item && item.message) || '');
+            var time = formatTime((item && item.created_at) || '');
+            var id = Number((item && item.id) || 0);
+            var module = String((item && item.module) || '');
+            var safe = document.createElement('span');
+            safe.textContent = message;
+            var safeMsg = safe.innerHTML;
+            safe.textContent = time;
+            var safeTime = safe.innerHTML;
+            safe.textContent = module;
+            var safeModule = safe.innerHTML;
+            return '<div class="notifications-item ' + cls + '">' +
+                '<button type="button" class="notifications-item__close" data-notification-clear="' + id + '" aria-label="Clear notification">' +
+                '<i class="fa-solid fa-xmark"></i>' +
+                '</button>' +
+                (module ? '<div class="notifications-item__module">Module: <strong>' + safeModule + '</strong></div>' : '') +
+                '<div class="notifications-item__message">' + safeMsg + '</div>' +
+                '<div class="notifications-item__time">' + safeTime + '</div>' +
+                '</div>';
+        }).join('');
+
+        notificationsList.innerHTML = html;
+    }
+
+    function setNotificationDot(count) {
+        if (!notificationsDot) {
+            return;
+        }
+        notificationsDot.hidden = !(count > 0);
+    }
+
+    var lastSeenNotifIds = null;
+
+    function pollNotifications() {
+        return fetch('/?route=notifications-poll&_=' + Date.now(), {
+            method: 'GET',
+            cache: 'no-store',
+            headers: { 'Cache-Control': 'no-cache' },
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (payload) {
+                if (!payload || payload.ok !== true) {
+                    return;
+                }
+                var items = Array.isArray(payload.items) ? payload.items : [];
+
+                // Reload apache-modules page when a new approve/reject notification arrives
+                if (window.location.href.indexOf('settings-apache-modules') !== -1 && lastSeenNotifIds !== null) {
+                    var newStatusChange = items.some(function (item) {
+                        return lastSeenNotifIds.indexOf(item.id) === -1 &&
+                            (item.type === 'module_request_declined' || item.type === 'module_request_approved');
+                    });
+                    if (newStatusChange) {
+                        window.location.reload();
+                        return;
+                    }
+                }
+                lastSeenNotifIds = items.map(function (i) { return i.id; });
+
+                setNotificationDot(items.length);
+                renderNotifications(items);
+            })
+            .catch(function () {
+                // Keep UI stable if polling fails.
+            });
+    }
+
+    function clearNotification(id) {
+        var body = new URLSearchParams();
+        body.set('csrf_token', String(window.VHM_CSRF_TOKEN || ''));
+        body.set('id', String(id || 0));
+
+        if (notificationsList) {
+            var row = notificationsList.querySelector('[data-notification-clear="' + String(id) + '"]');
+            if (row) {
+                var item = row.closest('.notifications-item');
+                if (item) {
+                    item.remove();
+                }
+            }
+        }
+
+        return fetch('/?route=notifications-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        }).then(function (r) { return r.json(); })
+        .then(function (payload) {
+            if (!payload || payload.ok !== true) {
+                throw new Error((payload && payload.message) ? payload.message : 'Failed to clear notification.');
+            }
+            return pollNotifications();
+        }).catch(function () {
+            return pollNotifications();
+        });
+    }
+
+    function clearAllNotifications() {
+        var body = new URLSearchParams();
+        body.set('csrf_token', String(window.VHM_CSRF_TOKEN || ''));
+
+        if (notificationsList) {
+            notificationsList.innerHTML = '<div class="notifications-empty">No notifications yet.</div>';
+        }
+        setNotificationDot(0);
+
+        return fetch('/?route=notifications-clear-all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        }).then(function (r) { return r.json(); })
+        .then(function (payload) {
+            if (!payload || payload.ok !== true) {
+                throw new Error((payload && payload.message) ? payload.message : 'Failed to clear notifications.');
+            }
+            return pollNotifications();
+        }).catch(function () {
+            return pollNotifications();
+        });
+    }
+
+    function closeNotificationsPanel() {
+        if (!notificationsPanel || !notificationsToggle) {
+            return;
+        }
+        notificationsPanel.hidden = true;
+        notificationsToggle.setAttribute('aria-expanded', 'false');
+    }
+
+    if (notificationsToggle && notificationsPanel) {
+        notificationsToggle.addEventListener('click', function (e) {
+            e.preventDefault();
+            var willOpen = notificationsPanel.hidden;
+            notificationsPanel.hidden = !willOpen;
+            notificationsToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+        });
+
+        if (notificationsList) {
+            notificationsList.addEventListener('click', function (e) {
+                var clearBtn = e.target.closest('[data-notification-clear]');
+                if (!clearBtn) {
+                    var tile = e.target.closest('.notifications-item--actionable');
+                    if (!tile) {
+                        return;
+                    }
+                    var moduleRow = tile.querySelector('.notifications-item__module strong');
+                    if (moduleRow) {
+                        var moduleName = String(moduleRow.textContent || '').trim();
+                        if (moduleName !== '') {
+                            window.location.href = '/?route=settings-apache-modules&open_request=' + encodeURIComponent(moduleName);
+                        }
+                    }
+                    return;
+                }
+                var id = Number(clearBtn.getAttribute('data-notification-clear') || '0');
+                if (id > 0) {
+                    clearNotification(id);
+                }
+            });
+        }
+
+        if (notificationsClearAll) {
+            notificationsClearAll.addEventListener('click', function (e) {
+                e.preventDefault();
+                clearAllNotifications();
+            });
+        }
+
+        document.addEventListener('click', function (e) {
+            if (!notificationsWrap) {
+                return;
+            }
+            if (!notificationsWrap.contains(e.target)) {
+                closeNotificationsPanel();
+            }
+        });
+
+        pollNotifications();
+        var pollSeconds = Number(window.VHM_NOTIFICATIONS_POLL_SECONDS || 120);
+        pollSeconds = isNaN(pollSeconds) ? 120 : Math.max(30, pollSeconds);
+        window.setInterval(pollNotifications, pollSeconds * 1000);
+    }
+
     /* Overlay click closes mobile sidebar */
     if (overlay) {
         overlay.addEventListener('click', closeMobileSidebar);

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Security\SecretEncryption;
 use PDO;
 use PDOException;
 use RuntimeException;
@@ -12,8 +13,10 @@ final class SettingsStore
 {
     private ?PDO $pdo = null;
 
-    public function __construct(private readonly string $dbFile)
-    {
+    public function __construct(
+        private readonly string $dbFile,
+        private readonly ?SecretEncryption $crypto = null
+    ) {
     }
 
     public function initialize(): void
@@ -78,6 +81,27 @@ final class SettingsStore
         $pdo->exec(
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_cf_domain_settings_domain_integration
              ON cloudflare_domain_settings (domain, dns_integration_id)'
+        );
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS module_requests (
+                module TEXT NOT NULL PRIMARY KEY,
+                reason TEXT NOT NULL DEFAULT \'\',
+                requested_by TEXT NOT NULL DEFAULT \'\',
+                requested_at TEXT NOT NULL DEFAULT \'\'
+            )'
+        );
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipient_email TEXT NOT NULL DEFAULT \'\',
+                recipient_role TEXT NOT NULL DEFAULT \'\',
+                type TEXT NOT NULL DEFAULT \'info\',
+                message TEXT NOT NULL DEFAULT \'\',
+                created_at TEXT NOT NULL DEFAULT \'\',
+                read_at TEXT NOT NULL DEFAULT \'\'
+            )'
         );
 
         $this->runMigrations();
@@ -346,6 +370,46 @@ final class SettingsStore
         ]);
     }
 
+    public function userPromoteToPrimary(string $email): void
+    {
+        $normalized = strtolower(trim($email));
+        if ($normalized === '') {
+            throw new RuntimeException('Target user is required.');
+        }
+
+        $target = $this->userGet($normalized);
+        if ($target === null) {
+            throw new RuntimeException('Target user not found.');
+        }
+
+        $pdo = $this->pdo();
+        $pdo->beginTransaction();
+
+        try {
+            $now = date('c');
+            $pdo->exec('UPDATE users SET is_primary = 0, updated_at = ' . $pdo->quote($now) . ' WHERE is_primary = 1');
+
+            $stmt = $pdo->prepare(
+                'UPDATE users
+                 SET is_primary = 1,
+                     account_type = :account_type,
+                     active = 1,
+                     updated_at = :updated_at
+                 WHERE email = :email'
+            );
+            $stmt->execute([
+                ':account_type' => 'admin',
+                ':updated_at' => $now,
+                ':email' => $normalized,
+            ]);
+
+            $pdo->commit();
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            throw new RuntimeException('Failed to promote user to primary admin.', 0, $e);
+        }
+    }
+
     // =========================================================================
     // Integrations table
     // =========================================================================
@@ -414,7 +478,7 @@ final class SettingsStore
             ':name' => (string) ($data['name'] ?? ($existing['name'] ?? '')),
             ':provider' => (string) ($data['provider'] ?? ($existing['provider'] ?? '')),
             ':category' => (string) ($data['category'] ?? ($existing['category'] ?? '')),
-            ':settings_json' => json_encode($settings, JSON_UNESCAPED_SLASHES) ?: '{}',
+            ':settings_json' => $this->encryptValue(json_encode($settings, JSON_UNESCAPED_SLASHES) ?: '{}'),
             ':created_at' => $existing !== null ? ($existing['created_at'] ?? $now) : $now,
             ':updated_at' => $now,
         ]);
@@ -550,7 +614,7 @@ final class SettingsStore
                     ':domain' => $domain,
                     ':dns_integration_id' => $dnsIntegrationId,
                     ':zone_id' => $zoneId,
-                    ':api_token' => $apiToken,
+                    ':api_token' => $this->encryptValue($apiToken),
                     ':record_ip' => (string) ($data['cf_record_ip'] ?? ''),
                     ':proxied' => (int) (bool) ($data['cf_proxied'] ?? false),
                     ':ttl' => max(1, (int) ($data['cf_ttl'] ?? 120)),
@@ -592,7 +656,7 @@ final class SettingsStore
     public function domainGetCfMappings(): array
     {
         $stmt = $this->pdo()->query(
-                        "SELECT d.domain, c.zone_id AS zone_id, c.api_token AS api_token
+                        "SELECT d.domain, c.zone_id AS zone_id, c.api_token AS api_token, c.record_ip AS record_ip
                          FROM domains d
                          JOIN cloudflare_domain_settings c
                              ON c.domain = d.domain AND c.dns_integration_id = d.dns_integration_id
@@ -607,9 +671,10 @@ final class SettingsStore
         $rows = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $rows[] = [
-                'domain' => (string) $row['domain'],
-                'zone_id' => (string) $row['zone_id'],
-                'api_token' => (string) $row['api_token'],
+                'domain'    => (string) $row['domain'],
+                'zone_id'   => (string) $row['zone_id'],
+                'api_token' => $this->decryptValue((string) $row['api_token']),
+                'record_ip' => (string) ($row['record_ip'] ?? ''),
             ];
         }
 
@@ -626,8 +691,187 @@ final class SettingsStore
     }
 
     // =========================================================================
-    // Private helpers
+    // Module request methods
     // =========================================================================
+
+    public function moduleRequestCreate(string $module, string $reason, string $requestedBy): void
+    {
+        $stmt = $this->pdo()->prepare(
+            'INSERT INTO module_requests (module, reason, requested_by, requested_at)
+             VALUES (:module, :reason, :requested_by, :requested_at)
+             ON CONFLICT(module) DO UPDATE SET
+                reason = excluded.reason,
+                requested_by = excluded.requested_by,
+                requested_at = excluded.requested_at'
+        );
+        $stmt->execute([
+            ':module'       => strtolower(trim($module)),
+            ':reason'       => trim($reason),
+            ':requested_by' => strtolower(trim($requestedBy)),
+            ':requested_at' => date('c'),
+        ]);
+    }
+
+    /** @return list<array{module:string,reason:string,requested_by:string,requested_at:string}> */
+    public function moduleRequestGetAll(): array
+    {
+        $stmt = $this->pdo()->query('SELECT * FROM module_requests ORDER BY requested_at ASC');
+        if ($stmt === false) {
+            return [];
+        }
+        $rows = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $rows[] = [
+                'module'       => (string) $row['module'],
+                'reason'       => (string) $row['reason'],
+                'requested_by' => (string) $row['requested_by'],
+                'requested_at' => (string) $row['requested_at'],
+            ];
+        }
+        return $rows;
+    }
+
+    /** @return array{module:string,reason:string,requested_by:string,requested_at:string}|null */
+    public function moduleRequestGet(string $module): ?array
+    {
+        $stmt = $this->pdo()->prepare('SELECT * FROM module_requests WHERE module = :module');
+        $stmt->execute([':module' => strtolower(trim($module))]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            return null;
+        }
+        return [
+            'module'       => (string) $row['module'],
+            'reason'       => (string) $row['reason'],
+            'requested_by' => (string) $row['requested_by'],
+            'requested_at' => (string) $row['requested_at'],
+        ];
+    }
+
+    public function moduleRequestDelete(string $module): void
+    {
+        $stmt = $this->pdo()->prepare('DELETE FROM module_requests WHERE module = :module');
+        $stmt->execute([':module' => strtolower(trim($module))]);
+    }
+
+    public function moduleRequestCount(): int
+    {
+        $stmt = $this->pdo()->query('SELECT COUNT(*) FROM module_requests');
+        if ($stmt === false) {
+            return 0;
+        }
+        return (int) $stmt->fetchColumn();
+    }
+
+    // =========================================================================
+    // Notification methods
+    // =========================================================================
+
+    public function notificationCreate(
+        string $message,
+        string $type = 'info',
+        string $recipientEmail = '',
+        string $recipientRole = ''
+    ): void {
+        $stmt = $this->pdo()->prepare(
+            'INSERT INTO notifications (recipient_email, recipient_role, type, message, created_at, read_at)
+             VALUES (:recipient_email, :recipient_role, :type, :message, :created_at, \'\')'
+        );
+        $stmt->execute([
+            ':recipient_email' => strtolower(trim($recipientEmail)),
+            ':recipient_role' => strtolower(trim($recipientRole)),
+            ':type' => trim($type) !== '' ? trim($type) : 'info',
+            ':message' => trim($message),
+            ':created_at' => date('c'),
+        ]);
+    }
+
+    /** @return list<array{id:int,type:string,message:string,created_at:string,is_read:bool}> */
+    public function notificationListForUser(string $email, bool $isAdmin, int $limit = 25): array
+    {
+        $limit = max(1, min(100, $limit));
+        $stmt = $this->pdo()->prepare(
+            'SELECT id, type, message, created_at, read_at
+             FROM notifications
+             WHERE recipient_email = :email
+                     OR (:is_admin = 1 AND LOWER(recipient_role) = \'admin\')
+             ORDER BY id DESC
+             LIMIT :limit'
+        );
+        $stmt->bindValue(':email', strtolower(trim($email)), PDO::PARAM_STR);
+        $stmt->bindValue(':is_admin', $isAdmin ? 1 : 0, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        $rows = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $rows[] = [
+                'id' => (int) $row['id'],
+                'type' => (string) $row['type'],
+                'message' => (string) $row['message'],
+                'created_at' => (string) $row['created_at'],
+                'is_read' => trim((string) ($row['read_at'] ?? '')) !== '',
+            ];
+        }
+        return $rows;
+    }
+
+    public function notificationUnreadCountForUser(string $email, bool $isAdmin): int
+    {
+        $stmt = $this->pdo()->prepare(
+            'SELECT COUNT(*)
+             FROM notifications
+               WHERE (recipient_email = :email OR (:is_admin = 1 AND LOWER(recipient_role) = \'admin\'))
+             AND read_at = \'\''
+        );
+        $stmt->execute([
+            ':email' => strtolower(trim($email)),
+            ':is_admin' => $isAdmin ? 1 : 0,
+        ]);
+        return (int) $stmt->fetchColumn();
+    }
+
+    public function notificationMarkAllReadForUser(string $email, bool $isAdmin): void
+    {
+        $stmt = $this->pdo()->prepare(
+            'UPDATE notifications
+             SET read_at = :read_at
+               WHERE (recipient_email = :email OR (:is_admin = 1 AND LOWER(recipient_role) = \'admin\'))
+             AND read_at = \'\''
+        );
+        $stmt->execute([
+            ':read_at' => date('c'),
+            ':email' => strtolower(trim($email)),
+            ':is_admin' => $isAdmin ? 1 : 0,
+        ]);
+    }
+
+    public function notificationDeleteForUser(int $id, string $email, bool $isAdmin): void
+    {
+        $stmt = $this->pdo()->prepare(
+            'DELETE FROM notifications
+             WHERE id = :id
+                             AND (recipient_email = :email OR (:is_admin = 1 AND LOWER(recipient_role) = \'admin\'))'
+        );
+        $stmt->execute([
+            ':id' => $id,
+            ':email' => strtolower(trim($email)),
+            ':is_admin' => $isAdmin ? 1 : 0,
+        ]);
+    }
+
+    public function notificationClearForUser(string $email, bool $isAdmin): void
+    {
+        $stmt = $this->pdo()->prepare(
+            'DELETE FROM notifications
+               WHERE recipient_email = :email OR (:is_admin = 1 AND LOWER(recipient_role) = \'admin\')'
+        );
+        $stmt->execute([
+            ':email' => strtolower(trim($email)),
+            ':is_admin' => $isAdmin ? 1 : 0,
+        ]);
+    }
+
 
     /**
      * @param array<string, mixed> $row
@@ -656,6 +900,9 @@ final class SettingsStore
     {
         $settings = [];
         $settingsJson = (string) ($row['settings_json'] ?? '{}');
+        if ($this->crypto !== null) {
+            $settingsJson = $this->crypto->decrypt($settingsJson);
+        }
         if ($settingsJson !== '') {
             $decoded = json_decode($settingsJson, true);
             if (is_array($decoded)) {
@@ -681,7 +928,7 @@ final class SettingsStore
     private function hydrateDomain(array $row): array
     {
         $cfZoneId = (string) ($row['cf_zone_id'] ?? '');
-        $cfApiToken = (string) ($row['cf_api_token'] ?? '');
+        $cfApiToken = $this->decryptValue((string) ($row['cf_api_token'] ?? ''));
 
         $result = [
             'domain' => (string) $row['domain'],
@@ -724,6 +971,12 @@ final class SettingsStore
         if ($this->get('_schema_v3_settings_trimmed') === null) {
             $this->trimDeprecatedSettingsKeys();
             $this->setMany(['_schema_v3_settings_trimmed' => date('c')]);
+        }
+
+        // Encrypt any existing plaintext secrets once the key is available.
+        if ($this->crypto !== null && $this->get('_schema_v4_secrets_encrypted') === null) {
+            $this->migrateEncryptExistingSecrets();
+            $this->setMany(['_schema_v4_secrets_encrypted' => date('c')]);
         }
     }
 
@@ -847,6 +1100,66 @@ final class SettingsStore
         $value = $stmt->fetchColumn();
 
         return is_string($value) ? $value : '';
+    }
+
+    // =========================================================================
+    // Encryption helpers
+    // =========================================================================
+
+    private function encryptValue(string $plaintext): string
+    {
+        if ($this->crypto === null || $plaintext === '') {
+            return $plaintext;
+        }
+
+        return $this->crypto->encrypt($plaintext);
+    }
+
+    private function decryptValue(string $value): string
+    {
+        if ($this->crypto === null || $value === '') {
+            return $value;
+        }
+
+        return $this->crypto->decrypt($value);
+    }
+
+    /**
+     * One-time migration: encrypt any plaintext secrets left over from runs
+     * before VHM_SECRET_KEY was configured.  Safe to re-run: already-encrypted
+     * values are skipped via isEncrypted().
+     */
+    private function migrateEncryptExistingSecrets(): void
+    {
+        if ($this->crypto === null) {
+            return;
+        }
+
+        // Encrypt settings_json for all integrations.
+        $stmt = $this->pdo()->query('SELECT id, settings_json FROM integrations');
+        if ($stmt !== false) {
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $json = (string) ($row['settings_json'] ?? '{}');
+                if ($json !== '{}' && $json !== '' && !$this->crypto->isEncrypted($json)) {
+                    $update = $this->pdo()->prepare('UPDATE integrations SET settings_json = :json WHERE id = :id');
+                    $update->execute([':json' => $this->crypto->encrypt($json), ':id' => $row['id']]);
+                }
+            }
+        }
+
+        // Encrypt api_token in cloudflare_domain_settings.
+        $stmt = $this->pdo()->query('SELECT rowid, api_token FROM cloudflare_domain_settings');
+        if ($stmt !== false) {
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $token = (string) ($row['api_token'] ?? '');
+                if ($token !== '' && !$this->crypto->isEncrypted($token)) {
+                    $update = $this->pdo()->prepare(
+                        'UPDATE cloudflare_domain_settings SET api_token = :token WHERE rowid = :rowid'
+                    );
+                    $update->execute([':token' => $this->crypto->encrypt($token), ':rowid' => $row['rowid']]);
+                }
+            }
+        }
     }
 
     private function columnExists(string $table, string $column): bool

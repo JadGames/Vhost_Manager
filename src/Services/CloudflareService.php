@@ -40,19 +40,21 @@ final class CloudflareService
      */
     public function createRecord(string $domain, ?string $zoneId = null): string
     {
-        if ($this->recordIp === '') {
-            throw new RuntimeException('Cloudflare record IP is required for DNS creation.');
-        }
-
         $credentials = $this->resolveCredentials($domain, $zoneId);
         $resolvedZoneId = $credentials['zone_id'];
-        $resolvedToken = $credentials['api_token'];
+        $resolvedToken  = $credentials['api_token'];
+        // Per-domain record_ip takes precedence over the global default.
+        $resolvedIp = $credentials['record_ip'] !== '' ? $credentials['record_ip'] : $this->recordIp;
+
+        if ($resolvedIp === '') {
+            throw new RuntimeException('Cloudflare record IP is required for DNS creation. Set the Record IP on the domain profile.');
+        }
 
         $url     = "https://api.cloudflare.com/client/v4/zones/{$resolvedZoneId}/dns_records";
         $payload = [
             'type'    => 'A',
             'name'    => $domain,
-            'content' => $this->recordIp,
+            'content' => $resolvedIp,
             'ttl'     => $this->ttl,
             'proxied' => $this->proxied,
         ];
@@ -147,6 +149,16 @@ final class CloudflareService
         return $this->recordIp;
     }
 
+    public function resolvedRecordIpForDomain(string $domain): string
+    {
+        try {
+            $creds = $this->resolveCredentials($domain, null);
+            return $creds['record_ip'] !== '' ? $creds['record_ip'] : $this->recordIp;
+        } catch (RuntimeException) {
+            return $this->recordIp;
+        }
+    }
+
     public function defaultProxied(): bool
     {
         return $this->proxied;
@@ -163,7 +175,7 @@ final class CloudflareService
     }
 
     /**
-     * @return array{zone_id:string, api_token:string}
+     * @return array{zone_id:string, api_token:string, record_ip:string}
      */
     private function resolveCredentials(?string $domain, ?string $zoneId): array
     {
@@ -174,14 +186,15 @@ final class CloudflareService
             foreach ($this->domainMappings as $mapping) {
                 if ($mapping['zone_id'] === $explicitZoneId) {
                     return [
-                        'zone_id' => $mapping['zone_id'],
+                        'zone_id'   => $mapping['zone_id'],
                         'api_token' => $mapping['api_token'],
+                        'record_ip' => (string) ($mapping['record_ip'] ?? ''),
                     ];
                 }
             }
 
             if ($this->apiToken !== '') {
-                return ['zone_id' => $explicitZoneId, 'api_token' => $this->apiToken];
+                return ['zone_id' => $explicitZoneId, 'api_token' => $this->apiToken, 'record_ip' => ''];
             }
         }
 
@@ -199,15 +212,17 @@ final class CloudflareService
 
         if ($best !== null) {
             return [
-                'zone_id' => $best['zone_id'],
+                'zone_id'   => $best['zone_id'],
                 'api_token' => $best['api_token'],
+                'record_ip' => (string) ($best['record_ip'] ?? ''),
             ];
         }
 
         if ($this->apiToken !== '' && $this->zoneId !== '') {
             return [
-                'zone_id' => $this->zoneId,
+                'zone_id'   => $this->zoneId,
                 'api_token' => $this->apiToken,
+                'record_ip' => $this->recordIp,
             ];
         }
 
@@ -242,15 +257,15 @@ final class CloudflareService
                 continue;
             }
 
-            $rows[] = ['domain' => $domain, 'zone_id' => $zoneId, 'api_token' => $apiToken];
+            $rows[] = ['domain' => $domain, 'zone_id' => $zoneId, 'api_token' => $apiToken, 'record_ip' => trim((string) ($entry['record_ip'] ?? ''))];
         }
 
         return $rows;
     }
 
     /**
-     * @param list<array{domain:string,zone_id:string,api_token:string}> $mappings
-     * @return list<array{domain:string,zone_id:string,api_token:string}>
+     * @param list<array{domain:string,zone_id:string,api_token:string,record_ip?:string}> $mappings
+     * @return list<array{domain:string,zone_id:string,api_token:string,record_ip:string}>
      */
     private function normalizeDomainMappings(array $mappings): array
     {
@@ -268,7 +283,7 @@ final class CloudflareService
                 continue;
             }
 
-            $rows[] = ['domain' => $domain, 'zone_id' => $zoneId, 'api_token' => $apiToken];
+            $rows[] = ['domain' => $domain, 'zone_id' => $zoneId, 'api_token' => $apiToken, 'record_ip' => trim((string) ($entry['record_ip'] ?? ''))];
         }
 
         return $rows;

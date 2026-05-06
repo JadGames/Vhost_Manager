@@ -9,6 +9,7 @@ use App\Security\Csrf;
 use App\Services\ApacheModulesService;
 use App\Services\HttpClient;
 use App\Services\IntegrationRegistry;
+use App\Services\Logger;
 use App\Security\DomainValidator;
 use App\Services\SettingsStore;
 use RuntimeException;
@@ -20,7 +21,8 @@ final class SettingsController extends BaseController
         private readonly Csrf $csrf,
         SettingsStore $settingsStore,
         private readonly ApacheModulesService $apacheModules,
-        private readonly HttpClient $httpClient
+        private readonly HttpClient $httpClient,
+        private readonly Logger $logger
     ) {
         parent::__construct($config, $settingsStore);
     }
@@ -29,8 +31,9 @@ final class SettingsController extends BaseController
     {
         $allowedDocrootBases = $this->allowedDocrootBases();
         $apacheModules = [];
-        $additionalUsers = $this->usersFromStore();
         $integrations = $this->integrationsFromStore();
+        $isAdminUser = $this->currentUserIsAdmin();
+        $additionalUsers = $isAdminUser ? $this->usersFromStore() : [];
 
         try {
             $apacheModules = $this->apacheModules->listModules();
@@ -51,7 +54,7 @@ final class SettingsController extends BaseController
             'defaultDocrootBase' => (string) $this->config->get('DEFAULT_DOCROOT_BASE', '/var/www'),
             'baseDomain' => (string) $this->config->get('VHOST_BASE_DOMAIN', ''),
             'domainOptions' => $this->domainOptionsFromStore(),
-            'adminUser' => $this->primaryAdminEmail(),
+            'adminUser' => $isAdminUser ? $this->primaryAdminEmail() : '',
             'additionalUsers' => $additionalUsers,
             'usersCount' => count($additionalUsers),
             'cfDomainMappingsCount' => count($this->cloudflareDomainsFromStore()),
@@ -401,10 +404,37 @@ final class SettingsController extends BaseController
 
         $requiredCount = count(array_filter($modules, static fn (array $module): bool => !empty($module['required'])));
 
+        // Build a lookup of pending module requests keyed by module name.
+        $requestMap = [];
+        foreach ($this->settingsStore->moduleRequestGetAll() as $req) {
+            $requestMap[$req['module']] = $req;
+        }
+
+        // Merge request data into module list.
+        foreach ($modules as &$module) {
+            $name = strtolower(trim((string) ($module['module'] ?? '')));
+            $module['requested'] = isset($requestMap[$name]);
+            $module['request_data'] = $requestMap[$name] ?? null;
+        }
+        unset($module);
+
+        // Keep pending requests at the top, then fall back to label/module sort.
+        usort($modules, static function (array $a, array $b): int {
+            $aRequested = !empty($a['requested']) ? 1 : 0;
+            $bRequested = !empty($b['requested']) ? 1 : 0;
+            if ($aRequested !== $bRequested) {
+                return $bRequested <=> $aRequested;
+            }
+
+            $aName = strtolower(trim((string) ($a['label'] ?? $a['module'] ?? '')));
+            $bName = strtolower(trim((string) ($b['label'] ?? $b['module'] ?? '')));
+            return $aName <=> $bName;
+        });
+
         $this->render('settings/apache-modules.php', [
-            'csrfToken' => $this->csrf->token(),
-            'modules' => $modules,
-            'requiredCount' => $requiredCount,
+            'csrfToken'    => $this->csrf->token(),
+            'modules'      => $modules,
+            'requiredCount'=> $requiredCount,
         ]);
     }
 
@@ -415,8 +445,104 @@ final class SettingsController extends BaseController
             $this->redirect('settings-apache-modules');
         }
 
-        $module = trim((string) ($_POST['module'] ?? ''));
+        $module  = strtolower(trim((string) ($_POST['module'] ?? '')));
+        $intent  = trim((string) ($_POST['intent'] ?? 'toggle'));
         $enabled = isset($_POST['enabled']) && (string) $_POST['enabled'] === '1';
+
+        if ($intent === 'request') {
+            if (Session::isAdmin()) {
+                Session::setFlash('error', 'Admins can enable modules directly.');
+                $this->redirect('settings-apache-modules');
+            }
+
+            $reason = trim((string) ($_POST['reason'] ?? ''));
+            $actor  = (string) ($_SESSION['username'] ?? '');
+            $this->settingsStore->moduleRequestCreate($module, $reason, $actor);
+            $this->logger->info('Apache module requested', [
+                'module' => $module,
+                'requested_by' => $actor,
+                'reason' => $reason,
+            ]);
+
+            $message = sprintf(
+                'New Apache module request: %s requested by %s%s',
+                $module,
+                $actor !== '' ? $actor : 'unknown user',
+                $reason !== '' ? ' - ' . $reason : ''
+            );
+            $this->settingsStore->notificationCreate($message, 'module_request', '', 'admin');
+
+            Session::setFlash('success', "Module request for {$module} submitted.");
+            $this->redirect('settings-apache-modules');
+        }
+
+        if ($intent === 'approve') {
+            if (!Session::isAdmin()) {
+                Session::setFlash('error', 'Only admins can approve module requests.');
+                $this->redirect('settings-apache-modules');
+            }
+
+            $request = $this->settingsStore->moduleRequestGet($module);
+            try {
+                $this->apacheModules->setEnabled($module, true);
+            } catch (RuntimeException $e) {
+                Session::setFlash('error', $e->getMessage());
+                $this->redirect('settings-apache-modules');
+            }
+            $this->settingsStore->moduleRequestDelete($module);
+            $this->logger->info('Apache module request approved', [
+                'module' => $module,
+                'approved_by' => (string) ($_SESSION['username'] ?? ''),
+                'requested_by' => (string) ($request['requested_by'] ?? ''),
+            ]);
+
+            $recipient = strtolower(trim((string) ($request['requested_by'] ?? '')));
+            if ($recipient !== '') {
+                $this->settingsStore->notificationCreate(
+                    sprintf('Your Apache module request for %s was approved.', $module),
+                    'module_request_approved',
+                    $recipient,
+                    ''
+                );
+            }
+
+            Session::setFlash('success', "Module {$module} approved and enabled.");
+            $this->redirect('settings-apache-modules');
+        }
+
+        if ($intent === 'reject') {
+            if (!Session::isAdmin()) {
+                Session::setFlash('error', 'Only admins can reject module requests.');
+                $this->redirect('settings-apache-modules');
+            }
+
+            $request = $this->settingsStore->moduleRequestGet($module);
+            $this->settingsStore->moduleRequestDelete($module);
+            $this->logger->info('Apache module request rejected', [
+                'module' => $module,
+                'rejected_by' => (string) ($_SESSION['username'] ?? ''),
+                'requested_by' => (string) ($request['requested_by'] ?? ''),
+            ]);
+
+            $recipient = strtolower(trim((string) ($request['requested_by'] ?? '')));
+            if ($recipient !== '') {
+                $this->settingsStore->notificationCreate(
+                    sprintf('Your Apache module request for %s was declined.', $module),
+                    'module_request_declined',
+                    $recipient,
+                    ''
+                );
+            }
+
+            Session::setFlash('success', "Module request for {$module} rejected.");
+            $this->redirect('settings-apache-modules');
+        }
+
+        // Default: toggle enable/disable (admin only path)
+        if (!Session::isAdmin()) {
+            Session::setFlash('error', 'Only admins can change module enabled state.');
+            $this->redirect('settings-apache-modules');
+        }
 
         try {
             $this->apacheModules->setEnabled($module, $enabled);
@@ -428,6 +554,109 @@ final class SettingsController extends BaseController
         Session::setFlash('success', sprintf('Apache module %s %s.', $module, $enabled ? 'enabled' : 'disabled'));
         $this->redirect('settings-apache-modules');
     }
+
+    public function notificationsPollAction(): void
+    {
+        header('Content-Type: application/json');
+
+        $username = strtolower(trim((string) ($_SESSION['username'] ?? '')));
+        $isAdmin = $this->currentUserIsAdmin();
+
+        $items = $this->settingsStore->notificationListForUser($username, $isAdmin, 20);
+        foreach ($items as &$item) {
+            $message = (string) ($item['message'] ?? '');
+            $module = '';
+
+            if (preg_match('/New Apache module request:\s*([a-z0-9_\\-]+)/i', $message, $m) === 1) {
+                $module = strtolower(trim((string) $m[1]));
+            } elseif (preg_match('/request for\s+([a-z0-9_\\-]+)\s+was/i', $message, $m) === 1) {
+                $module = strtolower(trim((string) $m[1]));
+            }
+
+            if ($module !== '') {
+                $item['module'] = $module;
+            }
+
+            $item['actionable'] = false;
+            if ($isAdmin && (string) ($item['type'] ?? '') === 'module_request' && $module !== '') {
+                $request = $this->settingsStore->moduleRequestGet($module);
+                if ($request !== null) {
+                    $item['actionable'] = true;
+                    $item['reason'] = (string) ($request['reason'] ?? '');
+                    $item['requested_by'] = (string) ($request['requested_by'] ?? '');
+                }
+            }
+        }
+        unset($item);
+
+        $unreadCount = $this->settingsStore->notificationUnreadCountForUser($username, $isAdmin);
+
+        echo json_encode([
+            'ok' => true,
+            'unreadCount' => $unreadCount,
+            'items' => $items,
+        ]);
+    }
+
+    public function notificationsMarkReadAction(): void
+    {
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        $username = strtolower(trim((string) ($_SESSION['username'] ?? '')));
+        $isAdmin = $this->currentUserIsAdmin();
+        $this->settingsStore->notificationMarkAllReadForUser($username, $isAdmin);
+
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => true]);
+    }
+
+    public function notificationsDeleteAction(): void
+    {
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        $id = (int) ($_POST['id'] ?? 0);
+        if ($id <= 0) {
+            http_response_code(422);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'message' => 'Notification id is required.']);
+            return;
+        }
+
+        $username = strtolower(trim((string) ($_SESSION['username'] ?? '')));
+        $isAdmin = $this->currentUserIsAdmin();
+        $this->settingsStore->notificationDeleteForUser($id, $username, $isAdmin);
+
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => true]);
+    }
+
+    public function notificationsClearAllAction(): void
+    {
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        $username = strtolower(trim((string) ($_SESSION['username'] ?? '')));
+        $isAdmin = $this->currentUserIsAdmin();
+        $this->settingsStore->notificationClearForUser($username, $isAdmin);
+
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => true]);
+    }
+
 
     public function saveGeneral(): void
     {
@@ -613,6 +842,9 @@ final class SettingsController extends BaseController
                 case 'user-toggle-role':
                     $this->handleUserToggleRole();
                     break;
+                case 'user-make-primary':
+                    $this->handleUserMakePrimary();
+                    break;
                 default:
                     throw new RuntimeException('Invalid users action.');
             }
@@ -623,6 +855,64 @@ final class SettingsController extends BaseController
 
         Session::setFlash('success', 'Users settings updated.');
         $this->redirect('settings-users');
+    }
+
+    public function usersRoleSaveAjaxAction(): void
+    {
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        if (!$this->isCurrentPrimaryAdmin()) {
+            http_response_code(403);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'message' => 'Only the primary admin can change user roles.']);
+            return;
+        }
+
+        $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
+        $role = strtolower(trim((string) ($_POST['role'] ?? 'user')));
+
+        try {
+            if ($targetUser === '') {
+                throw new RuntimeException('Target user is required.');
+            }
+            if (!in_array($role, ['admin', 'user'], true)) {
+                throw new RuntimeException('Invalid role value.');
+            }
+
+            if ($targetUser === $this->primaryAdminEmail()) {
+                throw new RuntimeException('Primary admin role cannot be changed.');
+            }
+
+            $records = $this->userRecordsFromStore();
+            if (!isset($records[$targetUser])) {
+                throw new RuntimeException('User not found.');
+            }
+
+            $currentRole = (string) ($records[$targetUser]['account_type'] ?? 'user');
+            if ($currentRole !== $role && $currentRole === 'admin' && !empty($records[$targetUser]['active'])) {
+                $records[$targetUser]['account_type'] = $role;
+                if ($this->activeAdminCount($records) < 1) {
+                    throw new RuntimeException('At least one active admin account is required.');
+                }
+            }
+
+            $this->settingsStore->userUpsert([
+                'email' => $targetUser,
+                'account_type' => $role,
+            ]);
+
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => true, 'message' => 'Saved']);
+        } catch (RuntimeException $e) {
+            http_response_code(422);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'message' => $e->getMessage()]);
+        }
     }
 
     public function showCloudflare(): void
@@ -971,6 +1261,10 @@ final class SettingsController extends BaseController
 
     private function handleAdminUsernameUpdate(): void
     {
+        if (!$this->isCurrentPrimaryAdmin()) {
+            throw new RuntimeException('Only the primary admin account can edit primary admin details.');
+        }
+
         $newAdmin = strtolower(trim((string) ($_POST['admin_user'] ?? '')));
         $newAdminFullName = trim((string) ($_POST['admin_full_name'] ?? ''));
         if ($newAdmin === '' || filter_var($newAdmin, FILTER_VALIDATE_EMAIL) === false) {
@@ -1134,6 +1428,9 @@ final class SettingsController extends BaseController
         }
 
         if ($targetUser === $adminUser) {
+            if (!$this->isCurrentPrimaryAdmin()) {
+                throw new RuntimeException('Only the primary admin account can reset primary admin password.');
+            }
             $this->settingsStore->userUpsert(['email' => $adminUser, 'password_hash' => $hash]);
 
             return;
@@ -1154,6 +1451,11 @@ final class SettingsController extends BaseController
 
         if ($targetUser === '' || $targetUser === $adminUser) {
             throw new RuntimeException('Only additional users can be deleted.');
+        }
+
+        $currentUser = strtolower(trim((string) ($_SESSION['username'] ?? '')));
+        if ($targetUser === $currentUser) {
+            throw new RuntimeException('You cannot delete your own account.');
         }
 
         $records = $this->userRecordsFromStore();
@@ -1180,6 +1482,11 @@ final class SettingsController extends BaseController
             throw new RuntimeException('Primary admin account cannot be disabled.');
         }
 
+        $currentUser = strtolower(trim((string) ($_SESSION['username'] ?? '')));
+        if ($targetUser === $currentUser) {
+            throw new RuntimeException('You cannot disable your own account.');
+        }
+
         $records = $this->userRecordsFromStore();
         if (!isset($records[$targetUser])) {
             throw new RuntimeException('User not found.');
@@ -1198,6 +1505,10 @@ final class SettingsController extends BaseController
 
     private function handleUserToggleRole(): void
     {
+        if (!$this->isCurrentPrimaryAdmin()) {
+            throw new RuntimeException('Only the primary admin can change user roles.');
+        }
+
         $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
         if ($targetUser === '') {
             throw new RuntimeException('Target user is required.');
@@ -1225,6 +1536,29 @@ final class SettingsController extends BaseController
             'email' => $targetUser,
             'account_type' => $nextRole,
         ]);
+    }
+
+    private function handleUserMakePrimary(): void
+    {
+        if (!$this->isCurrentPrimaryAdmin()) {
+            throw new RuntimeException('Only the current primary admin can transfer primary ownership.');
+        }
+
+        $targetUser = strtolower(trim((string) ($_POST['target_user'] ?? '')));
+        if ($targetUser === '') {
+            throw new RuntimeException('Target user is required.');
+        }
+
+        $records = $this->userRecordsFromStore();
+        if (!isset($records[$targetUser])) {
+            throw new RuntimeException('User not found.');
+        }
+
+        if (($records[$targetUser]['account_type'] ?? 'user') !== 'admin') {
+            throw new RuntimeException('Only an admin account can be made primary admin.');
+        }
+
+        $this->settingsStore->userPromoteToPrimary($targetUser);
     }
 
     /**
@@ -1261,7 +1595,7 @@ final class SettingsController extends BaseController
             $records[$email] = [
                 'email' => $email,
                 'full_name' => $fullName !== '' ? $fullName : $email,
-                'account_type' => (string) ($user['account_type'] ?? 'user') === 'admin' ? 'admin' : 'user',
+                'account_type' => strtolower((string) ($user['account_type'] ?? 'user')) === 'admin' ? 'admin' : 'user',
                 'active' => (bool) $user['active'],
                 'created_at' => (string) ($user['created_at'] ?? ''),
                 'last_login_at' => (string) ($user['last_login_at'] ?? ''),
@@ -1335,6 +1669,29 @@ final class SettingsController extends BaseController
         return strtolower(trim((string) ($record['email'] ?? 'admin@example.com')));
     }
 
+    private function currentUserIsAdmin(): bool
+    {
+        $currentUser = strtolower(trim((string) ($_SESSION['username'] ?? '')));
+        if ($currentUser === '') {
+            return false;
+        }
+
+        $record = $this->settingsStore->userGet($currentUser);
+        if ($record === null) {
+            return false;
+        }
+
+        $accountType = strtolower(trim((string) ($record['account_type'] ?? 'user')));
+
+        return !empty($record['is_primary']) || $accountType === 'admin';
+    }
+
+    private function isCurrentPrimaryAdmin(): bool
+    {
+        $currentUser = strtolower(trim((string) ($_SESSION['username'] ?? '')));
+        return $currentUser !== '' && $currentUser === $this->primaryAdminEmail();
+    }
+
     private function isIntegrationNameInUse(string $name, ?string $ignoreId): bool
     {
         foreach ($this->integrationsFromStore() as $integration) {
@@ -1353,22 +1710,45 @@ final class SettingsController extends BaseController
 
     private function detectServerIp(): ?string
     {
-        $candidates = [];
-
-        $serverAddr = trim((string) ($_SERVER['SERVER_ADDR'] ?? ''));
-        if ($serverAddr !== '') {
-            $candidates[] = $serverAddr;
-        }
-
-        $resolvedHost = @gethostbyname((string) gethostname());
-        if (is_string($resolvedHost) && $resolvedHost !== '') {
-            $candidates[] = $resolvedHost;
-        }
-
-        foreach ($candidates as $candidate) {
-            if (filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
-                return $candidate;
+        // 1. ip route get — gives the actual outbound source address.
+        $output = [];
+        @exec('ip route get 1.1.1.1 2>/dev/null', $output);
+        foreach ($output as $line) {
+            if (preg_match('/\bsrc\s+([\d.]+)/', $line, $m)) {
+                $ip = $m[1];
+                if (
+                    filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+                    && !in_array($ip, ['127.0.0.1', '0.0.0.0'], true)
+                ) {
+                    return $ip;
+                }
             }
+        }
+
+        // 2. hostname -I — space-separated list of all interface IPs, no loopback.
+        $output = [];
+        @exec('hostname -I 2>/dev/null', $output);
+        foreach ($output as $line) {
+            foreach (explode(' ', trim($line)) as $candidate) {
+                $candidate = trim($candidate);
+                if (
+                    $candidate !== ''
+                    && filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+                    && !in_array($candidate, ['127.0.0.1', '0.0.0.0'], true)
+                ) {
+                    return $candidate;
+                }
+            }
+        }
+
+        // 3. PHP gethostbyname — last resort.
+        $resolvedHost = @gethostbyname((string) gethostname());
+        if (
+            is_string($resolvedHost)
+            && filter_var($resolvedHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+            && !in_array($resolvedHost, ['127.0.0.1', '0.0.0.0'], true)
+        ) {
+            return $resolvedHost;
         }
 
         return null;

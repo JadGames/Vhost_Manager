@@ -163,6 +163,7 @@ input::-webkit-inner-spin-button {
 
 /* Firefox */
 input[type="number"] {
+    appearance: textfield;
     -moz-appearance: textfield;
 }
 
@@ -188,7 +189,7 @@ input[type="number"] {
     top: 0; left: 0; bottom: 0;
     z-index: 100;
     transition: width var(--ease-3);
-    overflow: hidden;
+    overflow: visible;
 }
 
 .sidebar.is-collapsed { width: var(--sidebar-col); }
@@ -317,16 +318,43 @@ input[type="number"] {
     gap: 2px;
 }
 
+/* Submenu hidden by default; visible when nav-group has is-open */
 .nav-submenu {
-    display: flex;
+    display: none;
     flex-direction: column;
     gap: 1px;
     margin-left: 24px;
     margin-top: 2px;
 }
+.nav-group.is-open .nav-submenu {
+    display: flex;
+}
+
+/* Toggle button styled like a nav-item */
+.nav-item--toggle {
+    cursor: pointer;
+    background: none;
+    border: none;
+    width: 100%;
+    text-align: left;
+    position: relative;
+}
+
+/* Chevron rotates when open */
+.nav-chevron {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--text-3);
+    transition: transform 0.2s var(--ease-1);
+}
+.nav-group.is-open .nav-chevron {
+    transform: rotate(180deg);
+}
 
 .nav-submenu-item {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     color: var(--text-3);
     padding: 6px 10px;
     border-radius: var(--r-md);
@@ -352,6 +380,71 @@ input[type="number"] {
 .sidebar.is-collapsed .nav-submenu {
     display: none;
 }
+
+/* Notification dots */
+.notif-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background: #4ade80;
+    border-radius: 50%;
+    flex-shrink: 0;
+    animation: notif-pulse 2s ease-in-out infinite;
+}
+.notif-dot--nav {
+    position: absolute;
+    top: 6px;
+    right: 26px;
+}
+.notif-dot--btn {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+}
+@keyframes notif-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: .55; transform: scale(1.35); }
+}
+
+/* Module card notification dot (top-left of card) */
+.module-card-notif {
+    position: absolute;
+    top: -3px;
+    left: -3px;
+    width: 10px;
+    height: 10px;
+    background: #4ade80;
+    border-radius: 50%;
+    animation: notif-pulse 2s ease-in-out infinite;
+    z-index: 1;
+}
+
+/* CF domain tile status dot */
+.cf-domain-tile__status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--text-3);
+}
+.cf-domain-tile__status-dot.is-loading {
+    background: var(--text-3);
+    animation: notif-pulse 1.2s ease-in-out infinite;
+}
+.cf-domain-tile__status-dot.is-ok   { background: #4ade80; }
+.cf-domain-tile__status-dot.is-fail { background: var(--danger, #f87171); }
+
+.cf-domain-tile__left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.cf-domain-tile__result {
+    font-size: 12px;
+    color: var(--text-3);
+}
+
 
 .nav-icon {
     font-size: 14px;
@@ -424,6 +517,7 @@ input[type="number"] {
     display: flex;
     gap: 4px;
     padding: 0 4px;
+    position: relative;
     transition: opacity var(--ease-2);
 }
 
@@ -623,8 +717,6 @@ input[type="number"] {
     flex-wrap: wrap;
 }
 
-.page-header-left {}
-
 .page-title {
     font-size: 20px;
     font-weight: 700;
@@ -796,15 +888,34 @@ input[type="number"] {
     background: var(--surface);
 }
 
+.apache-module-card__badge.is-requested {
+    color: #fb923c;
+    background: rgba(251, 146, 60, 0.12);
+}
+
+.apache-module-card.is-requested {
+    border-color: rgba(251, 146, 60, 0.35);
+}
+
 .apache-module-card__footer {
     display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    align-items: center;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: flex-start;
+    gap: 6px;
+    padding-top: 4px;
 }
 
 .apache-module-card__actions {
     margin-left: auto;
+}
+
+.apache-module-card__request-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
 }
 
 .apache-module-card__required {
@@ -1488,6 +1599,118 @@ input[type="number"] {
     font-size: 12px;
     padding: 0;
     transition: all var(--ease-1);
+}
+
+.notifications-wrap {
+    position: relative;
+}
+
+.notifications-panel {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 8px);
+    width: min(320px, 80vw);
+    max-height: 320px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--surface-2);
+    box-shadow: var(--shadow-lg);
+    z-index: 40;
+}
+
+.notifications-panel__header {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.notifications-panel__list {
+    max-height: 270px;
+    overflow: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.notifications-item {
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    padding: 10px 28px 8px 8px;
+    background: var(--surface);
+    position: relative;
+}
+
+.notifications-item.is-unread {
+    border-color: rgba(74, 222, 128, 0.45);
+}
+
+.notifications-item__message {
+    font-size: 12px;
+    color: var(--text-2);
+}
+
+.notifications-item__module {
+    font-size: 11px;
+    color: var(--text);
+    margin-bottom: 4px;
+}
+
+.notifications-item__module strong {
+    font-weight: 700;
+}
+
+.notifications-item--actionable {
+    cursor: pointer;
+}
+
+.notifications-item--actionable:hover {
+    border-color: rgba(74, 222, 128, 0.45);
+}
+
+.notifications-item__time {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-3);
+}
+
+.notifications-item__close {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.notifications-item__close:hover {
+    color: var(--danger);
+    background: var(--surface-hover);
+}
+
+#module-request-reason {
+    min-height: 130px;
+    resize: vertical;
+}
+
+.notifications-empty {
+    font-size: 12px;
+    color: var(--text-3);
+    padding: 10px;
+    text-align: center;
 }
 
 .icon-btn:hover {

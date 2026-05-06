@@ -135,24 +135,30 @@ final class VhostController extends BaseController
         $cfEnabled = $this->hasProviderIntegration('cloudflare');
         $npmEnabled = $this->hasProviderIntegration('npm');
         $npmDefaults = $this->firstProviderSettings('npm');
+        $domains = $this->domainsFromStore();
+        $dnsIntegrations = array_values(array_filter(
+            $this->settingsStore->integrationGetAll(),
+            static fn (array $i): bool => ($i['category'] ?? '') === 'dns'
+        ));
 
         $this->render('vhosts/create.php', [
-            'csrfToken'      => $this->csrf->token(),
-            'defaultBase'    => $this->config->get('DEFAULT_DOCROOT_BASE', '/var/www'),
+            'csrfToken'       => $this->csrf->token(),
+            'defaultBase'     => $this->config->get('DEFAULT_DOCROOT_BASE', '/var/www'),
             'allowedDocrootBases' => $this->allowedDocrootBases(),
-            'baseDomain'     => strtolower(trim((string) $this->config->get('VHOST_BASE_DOMAIN', ''))),
-            'cfEnabled'      => $cfEnabled,
-            'npmEnabled'     => $npmEnabled,
-            'cfRecordIp'     => '',
-            'npmForwardHost' => (string) ($npmDefaults['forward_host'] ?? '127.0.0.1'),
-            'npmForwardPort' => (string) ($npmDefaults['forward_port'] ?? '80'),
-            'npmSslEnabled'  => false,
-            'npmCertId'      => 0,
-            'npmSslForced'   => false,
-            'npmHttp2'       => false,
-            'npmHsts'        => false,
-            'npmHstsSubs'    => false,
+            'cfEnabled'       => $cfEnabled,
+            'npmEnabled'      => $npmEnabled,
+            'cfRecordIp'      => '',
+            'npmForwardHost'  => (string) ($npmDefaults['forward_host'] ?? '127.0.0.1'),
+            'npmForwardPort'  => (string) ($npmDefaults['forward_port'] ?? '80'),
+            'npmSslEnabled'   => false,
+            'npmCertId'       => 0,
+            'npmSslForced'    => false,
+            'npmHttp2'        => false,
+            'npmHsts'         => false,
+            'npmHstsSubs'     => false,
             'npmCertificates' => $this->service->listNpmCertificates(),
+            'domains'         => $domains,
+            'dnsIntegrations' => $dnsIntegrations,
         ]);
     }
 
@@ -164,10 +170,16 @@ final class VhostController extends BaseController
         }
 
         $baseDomain = strtolower(trim((string) $this->config->get('VHOST_BASE_DOMAIN', '')));
-        $subdomain  = strtolower(trim((string) ($_POST['subdomain'] ?? '')));
-        $domain     = (string) ($_POST['domain'] ?? '');
+        $subdomain   = strtolower(trim((string) ($_POST['subdomain'] ?? '')));
+        $selectedDomain = strtolower(trim((string) ($_POST['selected_domain'] ?? '')));
+        $domain      = (string) ($_POST['domain'] ?? '');
 
-        if ($baseDomain !== '' && $subdomain !== '') {
+        // Domain dropdown takes priority over legacy base-domain config.
+        if ($subdomain !== '' && $selectedDomain !== '') {
+            $domain = $this->buildFqdn($subdomain, $selectedDomain);
+        } elseif ($selectedDomain !== '' && $subdomain === '') {
+            $domain = $selectedDomain;
+        } elseif ($baseDomain !== '' && $subdomain !== '') {
             $domain = $this->buildFqdn($subdomain, $baseDomain);
         }
 
@@ -333,6 +345,72 @@ final class VhostController extends BaseController
             Session::setFlash('error', $e->getMessage());
             $this->redirect('dashboard');
         }
+    }
+
+    /**
+     * AJAX endpoint: quickly add a domain from the create-vhost page.
+     * Returns JSON {ok:bool, domain?:string, message?:string}
+     */
+    public function quickAddDomain(): void
+    {
+        header('Content-Type: application/json');
+
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        $domain = strtolower(trim((string) ($_POST['domain'] ?? '')));
+        if (!\App\Security\DomainValidator::isValid($domain)) {
+            http_response_code(422);
+            echo json_encode(['ok' => false, 'message' => 'Domain must be a valid FQDN (e.g. example.com).']);
+            return;
+        }
+
+        $domainData = ['domain' => $domain, 'updated_at' => date('c')];
+
+        if ($this->hasProviderIntegration('cloudflare')) {
+            $zoneId   = trim((string) ($_POST['cf_zone_id'] ?? ''));
+            $apiToken = trim((string) ($_POST['cf_api_token'] ?? ''));
+            $recordIp = trim((string) ($_POST['cf_record_ip'] ?? ''));
+            $proxied  = isset($_POST['cf_proxied']) && (string) $_POST['cf_proxied'] === '1';
+            $ttl      = (int) ($_POST['cf_ttl'] ?? 120);
+
+            if (($zoneId !== '' && $apiToken === '') || ($zoneId === '' && $apiToken !== '')) {
+                http_response_code(422);
+                echo json_encode(['ok' => false, 'message' => 'Cloudflare zone ID and API token must be provided together.']);
+                return;
+            }
+
+            if ($zoneId !== '' && preg_match('/^[a-f0-9]{32}$/i', $zoneId) !== 1) {
+                http_response_code(422);
+                echo json_encode(['ok' => false, 'message' => 'Cloudflare zone ID must be a 32-character hex string.']);
+                return;
+            }
+
+            if ($recordIp !== '' && filter_var($recordIp, FILTER_VALIDATE_IP) === false) {
+                http_response_code(422);
+                echo json_encode(['ok' => false, 'message' => 'Record IP must be a valid IPv4 or IPv6 address.']);
+                return;
+            }
+
+            $domainData['cf_zone_id']   = $zoneId;
+            $domainData['cf_api_token'] = $apiToken;
+            $domainData['cf_record_ip'] = $recordIp;
+            $domainData['cf_proxied']   = $proxied ? 1 : 0;
+            $domainData['cf_ttl']       = max(1, min(86400, $ttl));
+        }
+
+        try {
+            $this->settingsStore->domainUpsert($domainData);
+        } catch (\RuntimeException $e) {
+            http_response_code(422);
+            echo json_encode(['ok' => false, 'message' => $e->getMessage()]);
+            return;
+        }
+
+        echo json_encode(['ok' => true, 'domain' => $domain]);
     }
 
     private function postBool(string $key): bool

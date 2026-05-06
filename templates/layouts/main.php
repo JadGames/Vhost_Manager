@@ -107,22 +107,38 @@
                     <span class="nav-label">Vhosts</span>
                 </a>
 
-                <div class="nav-group">
-                    <a href="/?route=settings"
-                       class="nav-item <?= in_array($currentRoute, $settingsRoutes, true) ? 'is-active' : '' ?>"
-                       title="Settings">
+                <div class="nav-group <?= in_array($currentRoute, $settingsRoutes, true) ? 'is-open' : '' ?>" id="navGroupSettings">
+                    <button type="button"
+                            class="nav-item nav-item--toggle <?= in_array($currentRoute, $settingsRoutes, true) ? 'is-active' : '' ?>"
+                            id="navSettingsToggle"
+                            data-settings-url="/?route=settings"
+                            title="Settings"
+                            aria-expanded="<?= in_array($currentRoute, $settingsRoutes, true) ? 'true' : 'false' ?>">
                         <i class="fa-solid fa-gear nav-icon"></i>
                         <span class="nav-label">Settings</span>
-                    </a>
+                        <?php if ($isAdmin && $pendingModuleRequests > 0): ?>
+                            <span class="notif-dot notif-dot--nav" title="<?= $pendingModuleRequests ?> module request(s)"></span>
+                        <?php endif; ?>
+                        <i class="fa-solid fa-chevron-down nav-chevron"></i>
+                    </button>
                     <div class="nav-submenu">
+                        <?php if ($isAdmin): ?>
                         <a href="/?route=settings-users"
                            class="nav-submenu-item <?= $currentRoute === 'settings-users' ? 'is-active' : '' ?>">Users</a>
+                        <?php endif; ?>
                         <a href="/?route=settings-apache-modules"
-                           class="nav-submenu-item <?= $currentRoute === 'settings-apache-modules' ? 'is-active' : '' ?>">Apache Modules</a>
+                           class="nav-submenu-item <?= $currentRoute === 'settings-apache-modules' ? 'is-active' : '' ?>">
+                            Apache Modules
+                            <?php if ($isAdmin && $pendingModuleRequests > 0): ?>
+                                <span class="notif-dot notif-dot--nav-sub" title="<?= $pendingModuleRequests ?> pending"></span>
+                            <?php endif; ?>
+                        </a>
                         <a href="/?route=settings-integrations"
                            class="nav-submenu-item <?= in_array($currentRoute, ['settings-integrations', 'settings-cloudflare', 'settings-cloudflare-domains', 'settings-npm', 'settings-npm-ssl'], true) ? 'is-active' : '' ?>">Integrations</a>
+                        <?php if ($isAdmin): ?>
                         <a href="/?route=logs"
                            class="nav-submenu-item <?= $currentRoute === 'logs' ? 'is-active' : '' ?>">Logs</a>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -137,6 +153,37 @@
                     </div>
                 </div>
                 <div class="sidebar-actions">
+                    <div class="notifications-wrap" id="notificationsWrap">
+                        <button class="icon-btn" id="notificationsToggle" title="Notifications" aria-label="Notifications" aria-expanded="false">
+                            <i class="fa-solid fa-bell"></i>
+                            <?php if (($unreadNotifications ?? 0) > 0): ?>
+                                <span class="notif-dot notif-dot--btn" id="notificationsDot"></span>
+                            <?php else: ?>
+                                <span class="notif-dot notif-dot--btn" id="notificationsDot" hidden></span>
+                            <?php endif; ?>
+                        </button>
+                        <div class="notifications-panel" id="notificationsPanel" hidden>
+                            <div class="notifications-panel__header">
+                                <span>Notifications</span>
+                                <button type="button" class="btn btn--ghost btn--sm notifications-clear-all" id="notificationsClearAll">Clear all</button>
+                            </div>
+                            <div class="notifications-panel__list" id="notificationsList">
+                                <?php if (!empty($notifications)): ?>
+                                    <?php foreach ($notifications as $note): ?>
+                                        <div class="notifications-item <?= !empty($note['is_read']) ? 'is-read' : 'is-unread' ?>">
+                                            <button type="button" class="notifications-item__close" data-notification-clear="<?= (int) ($note['id'] ?? 0) ?>" aria-label="Clear notification">
+                                                <i class="fa-solid fa-xmark"></i>
+                                            </button>
+                                            <div class="notifications-item__message"><?= e((string) ($note['message'] ?? '')) ?></div>
+                                            <div class="notifications-item__time"><?= e((string) ($note['created_at'] ?? '')) ?></div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <div class="notifications-empty">No notifications yet.</div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
                     <button class="icon-btn" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
                         <i class="fa-solid fa-sun" id="themeIcon"></i>
                     </button>
@@ -176,6 +223,10 @@
             </header>
 
             <main class="main-content">
+                <script nonce="<?= e((string) ($cspNonce ?? '')) ?>">
+                    window.VHM_NOTIFICATIONS_POLL_SECONDS = <?= (int) ($notificationPollSeconds ?? 120) ?>;
+                    window.VHM_CSRF_TOKEN = <?= json_encode((string) ($csrfToken ?? '')) ?>;
+                </script>
                 <?php if (!empty($flash) && is_array($flash)): ?>
                     <div class="alert alert--<?= e((string) ($flash['type'] ?? 'error')) ?>">
                         <i class="fa-solid <?= ($flash['type'] ?? '') === 'success' ? 'fa-circle-check' : 'fa-circle-exclamation' ?>"></i>

@@ -76,6 +76,27 @@ final class Session
         }
     }
 
+    public static function isAdmin(): bool
+    {
+        return (bool) ($_SESSION['is_admin'] ?? false);
+    }
+
+    public static function setIsAdmin(bool $isAdmin): void
+    {
+        $_SESSION['is_admin'] = $isAdmin;
+    }
+
+    public static function requireAdmin(): void
+    {
+        if (!self::isAuthenticated()) {
+            self::redirectToLogin();
+        }
+        if (!self::isAdmin()) {
+            header('Location: /?route=dashboard');
+            exit;
+        }
+    }
+
     public static function setFlash(string $type, string $message): void
     {
         $_SESSION['flash'] = [

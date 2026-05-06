@@ -29,6 +29,7 @@ final class AppDefaults
             'MANAGED_VHOSTS_FILE' => $dataDir . '/vhosts.json',
             'LOGIN_ATTEMPTS_FILE' => $dataDir . '/login_attempts.json',
             'SETTINGS_DB_FILE' => $dataDir . '/settings.sqlite',
+            'NOTIFICATIONS_POLL_SECONDS' => getenv('VHM_NOTIFICATIONS_POLL_SECONDS') ?: '120',
             'DOCROOT_BASES_NOTIFY' => 'true',
             'DOCROOT_BASES_LAST_SEEN' => '',
             'PRIV_HELPER' => '/usr/local/sbin/vhost-admin-helper',

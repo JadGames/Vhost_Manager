@@ -67,7 +67,8 @@ $formatDate = static function (string $iso): string {
                     <?php if ($isPrimary): ?>
                         <span class="settings-tile__tag is-active">Primary Admin</span>
                     <?php endif; ?>
-                    <button class="btn btn--ghost btn--sm" type="button" data-open-user-modal="<?= e($editModalId) ?>">
+                    <?php $canEditPrimary = !$isPrimary || strtolower((string) ($currentUser ?? '')) === strtolower($email); ?>
+                    <button class="btn btn--ghost btn--sm" type="button" data-open-user-modal="<?= e($editModalId) ?>" <?= $canEditPrimary ? '' : 'disabled' ?> title="<?= $canEditPrimary ? 'Edit' : 'Only the primary admin account can edit itself' ?>">
                         <i class="fa-solid fa-pen"></i>
                         Edit
                     </button>
@@ -111,7 +112,11 @@ $formatDate = static function (string $iso): string {
                 </button>
             </div>
             <div class="dialog-body">
-                <?php if ($isPrimary): ?>
+                <?php if ($isPrimary && strtolower((string) ($currentUser ?? '')) !== strtolower($email)): ?>
+                    <div class="dialog-footer" style="justify-content:flex-start;">
+                        <span class="settings-tile__tag is-active">Only this primary admin account can edit itself.</span>
+                    </div>
+                <?php elseif ($isPrimary): ?>
                     <form class="form" method="post" action="/?route=settings-users-action" autocomplete="off">
                         <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
                         <input type="hidden" name="intent" value="admin-update">
@@ -200,16 +205,39 @@ $formatDate = static function (string $iso): string {
                 </form>
 
                 <?php if (!$isPrimary): ?>
-                    <div class="dialog-footer" style="margin-top: 18px;">
-                        <form method="post" action="/?route=settings-users-action" autocomplete="off">
-                            <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
-                            <input type="hidden" name="intent" value="user-toggle-role">
-                            <input type="hidden" name="target_user" value="<?= e($email) ?>">
-                            <button class="btn btn--ghost" type="submit">
-                                <i class="fa-solid fa-user-shield"></i>
-                                Toggle Role
-                            </button>
-                        </form>
+                    <?php if (strtolower((string) ($currentUser ?? '')) === strtolower((string) ($adminUser ?? ''))): ?>
+                        <div style="border-top: 1px solid var(--line); padding-top: 14px; margin-top: 6px;">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label class="form-label" for="role_select_<?= e($idSuffix) ?>">User Type</label>
+                                    <select class="form-select" id="role_select_<?= e($idSuffix) ?>" data-role-select="<?= e($email) ?>">
+                                        <option value="user" <?= $accountType === 'user' ? 'selected' : '' ?>>User</option>
+                                        <option value="admin" <?= $accountType === 'admin' ? 'selected' : '' ?>>Admin</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="btn-group" style="margin-top: 6px;">
+                                <button class="btn btn--primary" type="button" data-role-save="<?= e($email) ?>">
+                                    <i class="fa-solid fa-floppy-disk"></i>
+                                    Save Role
+                                </button>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <div style="border-top: 1px solid var(--line); padding-top: 14px; margin-top: 14px;">
+                        <div class="dialog-footer" style="justify-content:flex-end; gap:8px; flex-wrap:wrap;">
+                        <?php if (strtolower((string) ($currentUser ?? '')) === strtolower((string) ($adminUser ?? '')) && $accountType === 'admin'): ?>
+                            <form method="post" action="/?route=settings-users-action" autocomplete="off" data-confirm-message="Make this account the new Primary Admin? This cannot be undone by this account after transfer unless the new primary changes it back.">
+                                <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
+                                <input type="hidden" name="intent" value="user-make-primary">
+                                <input type="hidden" name="target_user" value="<?= e($email) ?>">
+                                <button class="btn btn--danger" type="submit">
+                                    <i class="fa-solid fa-crown"></i>
+                                    Make Primary
+                                </button>
+                            </form>
+                        <?php endif; ?>
 
                         <form method="post" action="/?route=settings-users-action" autocomplete="off">
                             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
@@ -230,16 +258,22 @@ $formatDate = static function (string $iso): string {
                                 Delete User
                             </button>
                         </form>
+                        </div>
+                    </div>
+
+                    <div style="border-top: 1px solid var(--line); padding-top: 14px; margin-top: 14px;">
+                        <div class="dialog-footer" style="justify-content:flex-end;">
+                        <button class="btn btn--ghost" type="button" data-close-user-modal="<?= e($editModalId) ?>">Close</button>
+                        </div>
                     </div>
                 <?php else: ?>
                     <div class="dialog-footer" style="margin-top: 18px; justify-content: flex-start;">
                         <span class="settings-tile__tag is-active">Primary admin account cannot be disabled or deleted.</span>
                     </div>
+                    <div class="dialog-footer">
+                        <button class="btn btn--ghost" type="button" data-close-user-modal="<?= e($editModalId) ?>">Close</button>
+                    </div>
                 <?php endif; ?>
-
-                <div class="dialog-footer">
-                    <button class="btn btn--ghost" type="button" data-close-user-modal="<?= e($editModalId) ?>">Close</button>
-                </div>
             </div>
         </dialog>
     <?php endforeach; ?>
@@ -394,6 +428,57 @@ $formatDate = static function (string $iso): string {
                 event.preventDefault();
             }
         });
+    });
+
+    // Save role without closing modal.
+    function showMiniToast(message, isError) {
+        var toast = document.createElement('div');
+        toast.className = 'alert ' + (isError ? 'alert--error' : 'alert--success');
+        toast.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:10000;max-width:260px;';
+        toast.textContent = message;
+        // Append to open dialog to appear above backdrop; fall back to body
+        var openDialog = document.querySelector('dialog[open]');
+        (openDialog || document.body).appendChild(toast);
+        setTimeout(function () { toast.remove(); }, 1800);
+    }
+
+    document.addEventListener('click', function (event) {
+        var saveBtn = event.target.closest('[data-role-save]');
+        if (!saveBtn) {
+            return;
+        }
+
+        var target = String(saveBtn.getAttribute('data-role-save') || '');
+        var select = document.querySelector('[data-role-select="' + target + '"]');
+        if (!target || !select) {
+            return;
+        }
+
+        var body = new URLSearchParams();
+        body.set('csrf_token', <?= json_encode((string) ($csrfToken ?? '')) ?>);
+        body.set('target_user', target);
+        body.set('role', String(select.value || 'user'));
+
+        saveBtn.disabled = true;
+        fetch('/?route=settings-users-role-save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (payload) {
+                if (!payload || payload.ok !== true) {
+                    showMiniToast((payload && payload.message) ? payload.message : 'Failed to save role.', true);
+                    return;
+                }
+                showMiniToast('Saved', false);
+            })
+            .catch(function () {
+                showMiniToast('Failed to save role.', true);
+            })
+            .finally(function () {
+                saveBtn.disabled = false;
+            });
     });
 }());
 </script>

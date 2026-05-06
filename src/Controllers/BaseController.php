@@ -41,12 +41,33 @@ abstract class BaseController
                 if ($userRecord['is_primary']) {
                     $accountRole = 'Primary Admin';
                 } else {
-                    $accountRole = ($userRecord['account_type'] ?? 'user') === 'admin' ? 'Admin' : 'User';
+                    $accountType = strtolower(trim((string) ($userRecord['account_type'] ?? 'user')));
+                    $accountRole = $accountType === 'admin' ? 'Admin' : 'User';
                 }
             }
         }
 
         $contentTemplate = $template;
+        $isAdmin = in_array($accountRole, ['Admin', 'Primary Admin'], true);
+        Session::setIsAdmin($isAdmin);
+        $pendingModuleRequests = 0;
+        try {
+            $pendingModuleRequests = $isAdmin ? $this->settingsStore->moduleRequestCount() : 0;
+        } catch (\Throwable) {
+            // table may not exist yet before first initialize
+        }
+
+        $unreadNotifications = 0;
+        $notifications = [];
+        $notificationPollSeconds = max(30, (int) $this->config->get('NOTIFICATIONS_POLL_SECONDS', 120));
+        try {
+            $identity = is_string($username) ? strtolower(trim($username)) : '';
+            $notifications = $this->settingsStore->notificationListForUser($identity, $isAdmin, 10);
+            $unreadNotifications = $this->settingsStore->notificationUnreadCountForUser($identity, $isAdmin);
+        } catch (\Throwable) {
+            $notifications = [];
+            $unreadNotifications = 0;
+        }
 
         include __DIR__ . '/../../templates/layouts/main.php';
     }

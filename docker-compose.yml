@@ -1,19 +1,24 @@
 name: Vhost_Manger
 services:
   vhost-manager:
-    image: jadgames/vhost-manager:latest
+    image: jadgames/vhost-manager:${VHM_IMAGE_TAG:-latest}
     ports:
-      - "8080:80"
+      - "80:80"
     environment:
       TZ: "${TZ:-Australia/Brisbane}"
       VHM_TRUSTED_PROXIES: "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
       VHM_ALLOWED_DOCROOT_BASES: "/var/www,/srv/sites"
+      # VHM_SECRET_KEY encrypts API keys and integration secrets stored in SQLite.
+      # Generate a key with: php -r "echo sodium_bin2hex(random_bytes(32)) . PHP_EOL;"
+      # Once set, do NOT change or remove this value — it is required to decrypt stored secrets.
+      VHM_SECRET_KEY: "${VHM_SECRET_KEY:-}"
     volumes:
-      - ./config/vhost-manager:/opt/vhost-manager/storage
+      - ./config:/opt/vhost-manager/storage
       - ./sites:/srv/sites
       - ./www:/var/www
     restart: unless-stopped
 
 # Notes:
-# - Vhost Manager UI: http://host:8080
+# - Copy .env.example to .env, fill in VHM_SECRET_KEY, then run: docker compose --env-file .env up -d
+# - Vhost Manager UI: http://host
 # - Keep VHM_ALLOWED_DOCROOT_BASES and vhost-manager volume mounts in sync.

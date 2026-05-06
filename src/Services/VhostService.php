@@ -98,7 +98,7 @@ final class VhostService
                 $cfRecordId = $this->cloudflare->createRecord($domain);
                 $cfZoneId = $this->cloudflare->resolveZoneIdForDomain($domain);
             } catch (RuntimeException $e) {
-                $this->rollbackApache($helper, $domain, $docroot, $allowedBasesStr);
+                $this->rollbackApache($helper, $domain, $docroot, $allowedBasesStr, true);
                 throw new RuntimeException("Cloudflare DNS failed (Apache vhost rolled back): " . $e->getMessage());
             }
         } else {
@@ -119,7 +119,7 @@ final class VhostService
                 if ($cfRecordId !== null && $this->cloudflare !== null) {
                     $this->cloudflare->deleteRecord($cfRecordId, $domain, $cfZoneId);
                 }
-                $this->rollbackApache($helper, $domain, $docroot, $allowedBasesStr);
+                $this->rollbackApache($helper, $domain, $docroot, $allowedBasesStr, true);
                 throw new RuntimeException("NPM proxy host failed (Apache vhost and DNS rolled back): " . $e->getMessage());
             }
         } else {
@@ -140,7 +140,7 @@ final class VhostService
             'created_by'   => $actor,
             'cf_record_id' => $cfRecordId,
             'cf_zone_id'   => $cfZoneId,
-            'cf_record_ip' => $cfRecordId !== null && $this->cloudflare !== null ? $this->cloudflare->defaultRecordIp() : null,
+            'cf_record_ip' => $cfRecordId !== null && $this->cloudflare !== null ? $this->cloudflare->resolvedRecordIpForDomain($domain) : null,
             'cf_proxied'   => $cfRecordId !== null && $this->cloudflare !== null ? $this->cloudflare->defaultProxied() : null,
             'npm_proxy_id' => $npmProxyId,
             'npm_ssl_enabled' => !empty($npmOptions['ssl_enabled']),
@@ -344,12 +344,13 @@ final class VhostService
         $this->logger->info('Vhost deleted', ['domain' => $domain, 'delete_root' => $deleteRoot, 'actor' => $actor]);
     }
 
-    private function rollbackApache(string $helper, string $domain, string $docroot, string $allowedBasesStr = '/var/www'): void
+    private function rollbackApache(string $helper, string $domain, string $docroot, string $allowedBasesStr = '/var/www', bool $deleteRoot = false): void
     {
         $cmd = sprintf(
-            'sudo %s delete %s 0 %s %s',
+            'sudo %s delete %s %s %s %s',
             escapeshellarg($helper),
             escapeshellarg($domain),
+            $deleteRoot ? '1' : '0',
             escapeshellarg($docroot),
             escapeshellarg($allowedBasesStr)
         );

@@ -510,7 +510,7 @@ final class SetupController extends BaseController
 
         if (isset($_POST['skip'])) {
             unset($_SESSION['setup_pending_dns']);
-            $this->redirect('setup-confirm');
+            $this->redirect('setup-domain');
         }
 
         $dnsProviders = $this->setupProvidersByCategory('dns');
@@ -531,11 +531,105 @@ final class SetupController extends BaseController
         }
 
         $_SESSION['setup_pending_dns'] = ['name' => $name, 'provider' => $providerKey];
+        $this->redirect('setup-domain');
+    }
+
+    /**
+     * Show page 4 of setup: Add First Domain
+     */
+    public function showDomain(): void
+    {
+        if ($this->isSetupComplete()) {
+            $this->redirect(Session::isAuthenticated() ? 'dashboard' : 'login');
+        }
+
+        $pendingSetup = $_SESSION['setup_pending'] ?? null;
+        if (!is_array($pendingSetup)) {
+            $this->redirect('setup');
+        }
+
+        $hasCfIntegration = isset($_SESSION['setup_pending_dns']) &&
+            is_array($_SESSION['setup_pending_dns']) &&
+            (string) ($_SESSION['setup_pending_dns']['provider'] ?? '') === 'cloudflare';
+
+        $pending = $_SESSION['setup_pending_domain'] ?? [];
+        if (!is_array($pending)) { $pending = []; }
+
+        $this->render('auth/setup-domain.php', [
+            'csrfToken'       => $this->csrf->token(),
+            'hasCfIntegration'=> $hasCfIntegration,
+            'fieldErrors'     => Session::consumeFieldErrors(),
+            'domain'          => (string) ($pending['domain'] ?? ''),
+            'cfZoneId'        => (string) ($pending['cf_zone_id'] ?? ''),
+            'cfRecordIp'      => (string) ($pending['cf_record_ip'] ?? ''),
+            'cfTtl'           => (int) ($pending['cf_ttl'] ?? 120),
+            'cfProxied'       => (bool) ($pending['cf_proxied'] ?? true),
+        ]);
+    }
+
+    /**
+     * Process page 4: optionally save first domain, redirect to confirm
+     */
+    public function completeDomain(): void
+    {
+        if ($this->isSetupComplete()) {
+            $this->redirect('login');
+        }
+
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            Session::setFlash('error', 'Invalid CSRF token.');
+            $this->redirect('setup-domain');
+        }
+
+        if (isset($_POST['skip'])) {
+            unset($_SESSION['setup_pending_domain']);
+            $this->redirect('setup-confirm');
+        }
+
+        $domain = strtolower(trim((string) ($_POST['domain'] ?? '')));
+        if (!\App\Security\DomainValidator::isValid($domain)) {
+            Session::setFieldErrors(['domain' => 'Domain must be a valid FQDN (e.g. example.com).']);
+            $this->redirect('setup-domain');
+        }
+
+        $hasCfIntegration = isset($_SESSION['setup_pending_dns']) &&
+            is_array($_SESSION['setup_pending_dns']) &&
+            (string) ($_SESSION['setup_pending_dns']['provider'] ?? '') === 'cloudflare';
+
+        $domainData = [
+            'domain'     => $domain,
+            'updated_at' => date('c'),
+        ];
+
+        if ($hasCfIntegration) {
+            $zoneId   = trim((string) ($_POST['cf_zone_id'] ?? ''));
+            $apiToken = trim((string) ($_POST['cf_api_token'] ?? ''));
+            $recordIp = trim((string) ($_POST['cf_record_ip'] ?? ''));
+            $proxied  = isset($_POST['cf_proxied']) && (string) $_POST['cf_proxied'] === '1';
+            $ttl      = max(1, min(86400, (int) ($_POST['cf_ttl'] ?? 120)));
+
+            if ($zoneId !== '' && preg_match('/^[a-f0-9]{32}$/i', $zoneId) !== 1) {
+                Session::setFieldErrors(['cf_zone_id' => 'Zone ID must be a 32-character hex string.']);
+                $this->redirect('setup-domain');
+            }
+            if ($recordIp !== '' && filter_var($recordIp, FILTER_VALIDATE_IP) === false) {
+                Session::setFieldErrors(['cf_record_ip' => 'Record IP must be a valid IP address.']);
+                $this->redirect('setup-domain');
+            }
+
+            $domainData['cf_zone_id']   = $zoneId;
+            $domainData['cf_api_token'] = $apiToken;
+            $domainData['cf_record_ip'] = $recordIp;
+            $domainData['cf_proxied']   = $proxied ? 1 : 0;
+            $domainData['cf_ttl']       = $ttl;
+        }
+
+        $_SESSION['setup_pending_domain'] = $domainData;
         $this->redirect('setup-confirm');
     }
 
     /**
-     * Show page 4 of setup: Confirmation review
+     * Show page 5 of setup: Confirmation review
      */
     public function showConfirm(): void
     {
@@ -590,7 +684,7 @@ final class SetupController extends BaseController
     }
 
     /**
-     * Process page 4: Save all settings and auto-login
+     * Process page 5: Save all settings and auto-login
      */
     public function completeConfirm(): void
     {
@@ -694,6 +788,12 @@ final class SetupController extends BaseController
                 ]);
                 }
             }
+
+            // Save first domain if provided during setup.
+            $pendingDomain = $_SESSION['setup_pending_domain'] ?? null;
+            if (is_array($pendingDomain) && trim((string) ($pendingDomain['domain'] ?? '')) !== '') {
+                $this->settingsStore->domainUpsert($pendingDomain);
+            }
         } catch (RuntimeException $e) {
             Session::setFlash('error', $e->getMessage());
             $this->redirect('setup-confirm');
@@ -705,6 +805,7 @@ final class SetupController extends BaseController
             $_SESSION['setup_pending_admin_password'],
             $_SESSION['setup_pending_proxy'],
             $_SESSION['setup_pending_dns'],
+            $_SESSION['setup_pending_domain'],
             $_SESSION['setup_npm_accounts']
         );
 

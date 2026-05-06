@@ -527,28 +527,62 @@ var VHM_CF_ENABLED_DOMAINS = <?= json_encode(array_values($cloudflareEnabledDoma
                 '<a class="btn btn--primary" href="/?route=domains">Add Domain</a>' +
                 '</div>';
             if (cloudflareDomainsTestAll) {
-                cloudflareDomainsTestAll.disabled = true;
+                cloudflareDomainsTestAll.style.display = 'none';
             }
         } else {
-            var escaped = domains.map(function (domain) {
+            // Build tiles with loading state, then auto-run all tests.
+            if (cloudflareDomainsTestAll) {
+                cloudflareDomainsTestAll.style.display = 'none';
+            }
+            var escapedDomains = domains.map(function (domain) {
                 var item = document.createElement('span');
                 item.textContent = String(domain);
-                return '<div class="cf-domain-tile" data-cf-domain="' + item.innerHTML + '">' +
-                    '<span class="cf-domain-tile__name">' + item.innerHTML + '</span>' +
-                    '<button class="btn btn--ghost btn--sm" type="button" data-cf-test-domain="' + item.innerHTML + '">' +
-                    '<i class="fa-solid fa-bolt"></i> Test' +
-                    '</button>' +
+                var safe = item.innerHTML;
+                return '<div class="cf-domain-tile cf-domain-tile--testing" data-cf-domain="' + safe + '">' +
+                    '<div class="cf-domain-tile__left">' +
+                    '<span class="cf-domain-tile__status-dot is-loading"></span>' +
+                    '<span class="cf-domain-tile__name">' + safe + '</span>' +
+                    '</div>' +
+                    '<span class="cf-domain-tile__result" data-cf-result="' + safe + '">' +
+                    '<i class="fa-solid fa-spinner fa-spin"></i> Testing…' +
+                    '</span>' +
                     '</div>';
             }).join('');
             cloudflareDomainsListWrap.innerHTML =
-                '<p style="margin:0 0 .75rem 0; color:var(--text-3);">Cloudflare-enabled domains:</p>' +
-                '<div class="cf-domains-grid">' + escaped + '</div>';
-            if (cloudflareDomainsTestAll) {
-                cloudflareDomainsTestAll.disabled = false;
-            }
+                '<p style="margin:0 0 .75rem 0; color:var(--text-3);">Testing Cloudflare credentials for each domain…</p>' +
+                '<div class="cf-domains-grid">' + escapedDomains + '</div>';
         }
 
         openDialog(cloudflareDomainsModal);
+
+        // Auto-run tests for all domains
+        if (domains.length > 0) {
+            domains.forEach(function (domain) {
+                testCloudflareDomain(domain).then(function (result) {
+                    var resultEl = cloudflareDomainsListWrap.querySelector('[data-cf-result="' + CSS.escape(domain) + '"]');
+                    var tile     = cloudflareDomainsListWrap.querySelector('[data-cf-domain="' + CSS.escape(domain) + '"]');
+                    var dot      = tile ? tile.querySelector('.cf-domain-tile__status-dot') : null;
+                    if (resultEl) {
+                        resultEl.innerHTML = result.ok
+                            ? '<i class="fa-solid fa-circle-check" style="color:var(--accent)"></i> <span style="color:var(--accent)">Passed</span>'
+                            : '<i class="fa-solid fa-circle-xmark" style="color:var(--danger)"></i> <span style="color:var(--danger);font-size:11px;">' + escapeHtml(result.message) + '</span>';
+                    }
+                    if (dot) {
+                        dot.className = 'cf-domain-tile__status-dot ' + (result.ok ? 'is-ok' : 'is-fail');
+                    }
+                    if (tile) {
+                        tile.classList.remove('cf-domain-tile--testing');
+                        tile.classList.add(result.ok ? 'cf-domain-tile--ok' : 'cf-domain-tile--fail');
+                    }
+                });
+            });
+        }
+    }
+
+    function escapeHtml(str) {
+        var node = document.createElement('span');
+        node.textContent = String(str || '');
+        return node.innerHTML;
     }
 
     function csrfTokenValue() {

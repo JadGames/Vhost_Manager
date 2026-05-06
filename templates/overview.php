@@ -26,6 +26,7 @@
             <div class="overview-stat-label">Integrations</div>
         </div>
     </div>
+    <?php if (!empty($isAdmin)): ?>
     <div class="overview-stat-card">
         <div class="overview-stat-icon is-warning">
             <i class="fa-solid fa-users"></i>
@@ -35,6 +36,7 @@
             <div class="overview-stat-label">Users</div>
         </div>
     </div>
+    <?php endif; ?>
     <div class="overview-stat-card">
         <div class="overview-stat-icon">
             <i class="fa-solid fa-plug-circle-bolt"></i>

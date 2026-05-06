@@ -10,6 +10,7 @@
 <div class="settings-tiles-stack">
 
     <!-- Users tile -->
+    <?php if (!empty($isAdmin)): ?>
     <div class="settings-tile">
         <div class="settings-tile__header">
             <div class="settings-tile__header-left">
@@ -43,6 +44,7 @@
             </div>
         </div>
     </div>
+    <?php endif; ?>
 
     <!-- Apache Modules tile -->
     <div class="settings-tile">
@@ -131,6 +133,7 @@
     </div>
 
     <!-- General Settings tile -->
+    <?php if (!empty($isAdmin)): ?>
     <div class="settings-tile">
         <div class="settings-tile__header">
             <div class="settings-tile__header-left">
@@ -202,6 +205,7 @@
             </form>
         </div>
     </div>
+    <?php endif; ?>
 
 </div>
 

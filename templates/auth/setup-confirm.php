@@ -8,7 +8,7 @@
 
     <div class="auth-box">
         <h1 class="auth-title">Setup: Review & Confirm</h1>
-        <p class="auth-subtitle">Step 4 of 4: Review your settings</p>
+        <p class="auth-subtitle">Step 5 of 5: Review your settings</p>
 
         <div class="confirm-card">
             <h3 class="confirm-card-title">Admin Account</h3>
@@ -74,7 +74,7 @@
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
 
             <div style="display:flex; gap:8px;">
-                <a href="/?route=setup-dns" class="btn btn--secondary" style="flex:1; text-align:center; text-decoration:none;">
+                <a href="/?route=setup-domain" class="btn btn--secondary" style="flex:1; text-align:center; text-decoration:none;">
                     <i class="fa-solid fa-arrow-left"></i> Back
                 </a>
                 <button class="btn btn--success" type="submit" style="flex:1;">

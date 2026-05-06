@@ -17,7 +17,8 @@ final class Session
         session_set_cookie_params([
             'lifetime' => 0,
             'path' => '/',
-            'secure' => $config->getBool('APP_HTTPS', false),
+            // Derive cookie security from the current request to avoid stale APP_HTTPS config causing login loops.
+            'secure' => self::isHttpsRequest($config),
             'httponly' => true,
             'samesite' => 'Lax',
         ]);
@@ -114,5 +115,42 @@ final class Session
     {
         header('Location: /?route=login');
         exit;
+    }
+
+    private static function isHttpsRequest(Config $config): bool
+    {
+        $https = strtolower(trim((string) ($_SERVER['HTTPS'] ?? '')));
+        if ($https !== '' && $https !== 'off' && $https !== '0') {
+            return true;
+        }
+
+        if ((string) ($_SERVER['SERVER_PORT'] ?? '') === '443') {
+            return true;
+        }
+
+        $remoteAddr = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+        if (!is_valid_ip($remoteAddr)) {
+            return false;
+        }
+
+        $trustedProxies = parse_trusted_proxies((string) $config->get('TRUSTED_PROXIES', ''));
+        if ($trustedProxies === [] || !ip_matches_any_proxy($remoteAddr, $trustedProxies)) {
+            return false;
+        }
+
+        $forwardedProto = strtolower(trim((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')));
+        if ($forwardedProto !== '') {
+            $firstProto = trim(explode(',', $forwardedProto)[0]);
+            if ($firstProto === 'https') {
+                return true;
+            }
+        }
+
+        $forwardedSsl = strtolower(trim((string) ($_SERVER['HTTP_X_FORWARDED_SSL'] ?? '')));
+        if ($forwardedSsl === 'on') {
+            return true;
+        }
+
+        return (string) ($_SERVER['HTTP_X_FORWARDED_PORT'] ?? '') === '443';
     }
 }

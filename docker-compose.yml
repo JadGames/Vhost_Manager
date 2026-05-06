@@ -1,7 +1,7 @@
 name: Vhost_Manger
 services:
   vhost-manager:
-    image: jadgames/vhost-manager:${VHM_IMAGE_TAG:-edge-latest}
+    image: jadgames/vhost-manager:latest
     ports:
       - "8080:80"
     environment:

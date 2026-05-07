@@ -104,6 +104,9 @@ final class SettingsStore
             )'
         );
 
+        $this->ensureModuleRequestsSchema();
+        $this->ensureNotificationsSchema();
+
         $this->runMigrations();
     }
 
@@ -696,6 +699,7 @@ final class SettingsStore
 
     public function moduleRequestCreate(string $module, string $reason, string $requestedBy): void
     {
+        $this->ensureModuleRequestsSchema();
         $stmt = $this->pdo()->prepare(
             'INSERT INTO module_requests (module, reason, requested_by, requested_at)
              VALUES (:module, :reason, :requested_by, :requested_at)
@@ -715,6 +719,7 @@ final class SettingsStore
     /** @return list<array{module:string,reason:string,requested_by:string,requested_at:string}> */
     public function moduleRequestGetAll(): array
     {
+        $this->ensureModuleRequestsSchema();
         $stmt = $this->pdo()->query('SELECT * FROM module_requests ORDER BY requested_at ASC');
         if ($stmt === false) {
             return [];
@@ -734,6 +739,7 @@ final class SettingsStore
     /** @return array{module:string,reason:string,requested_by:string,requested_at:string}|null */
     public function moduleRequestGet(string $module): ?array
     {
+        $this->ensureModuleRequestsSchema();
         $stmt = $this->pdo()->prepare('SELECT * FROM module_requests WHERE module = :module');
         $stmt->execute([':module' => strtolower(trim($module))]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -750,12 +756,14 @@ final class SettingsStore
 
     public function moduleRequestDelete(string $module): void
     {
+        $this->ensureModuleRequestsSchema();
         $stmt = $this->pdo()->prepare('DELETE FROM module_requests WHERE module = :module');
         $stmt->execute([':module' => strtolower(trim($module))]);
     }
 
     public function moduleRequestCount(): int
     {
+        $this->ensureModuleRequestsSchema();
         $stmt = $this->pdo()->query('SELECT COUNT(*) FROM module_requests');
         if ($stmt === false) {
             return 0;
@@ -773,6 +781,7 @@ final class SettingsStore
         string $recipientEmail = '',
         string $recipientRole = ''
     ): void {
+        $this->ensureNotificationsSchema();
         $stmt = $this->pdo()->prepare(
             'INSERT INTO notifications (recipient_email, recipient_role, type, message, created_at, read_at)
              VALUES (:recipient_email, :recipient_role, :type, :message, :created_at, \'\')'
@@ -789,17 +798,17 @@ final class SettingsStore
     /** @return list<array{id:int,type:string,message:string,created_at:string,is_read:bool}> */
     public function notificationListForUser(string $email, bool $isAdmin, int $limit = 25): array
     {
+        $this->ensureNotificationsSchema();
+        unset($isAdmin);
         $limit = max(1, min(100, $limit));
         $stmt = $this->pdo()->prepare(
             'SELECT id, type, message, created_at, read_at
              FROM notifications
              WHERE recipient_email = :email
-                     OR (:is_admin = 1 AND LOWER(recipient_role) = \'admin\')
              ORDER BY id DESC
              LIMIT :limit'
         );
         $stmt->bindValue(':email', strtolower(trim($email)), PDO::PARAM_STR);
-        $stmt->bindValue(':is_admin', $isAdmin ? 1 : 0, PDO::PARAM_INT);
         $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
         $stmt->execute();
 
@@ -818,58 +827,121 @@ final class SettingsStore
 
     public function notificationUnreadCountForUser(string $email, bool $isAdmin): int
     {
+        $this->ensureNotificationsSchema();
+        unset($isAdmin);
         $stmt = $this->pdo()->prepare(
             'SELECT COUNT(*)
              FROM notifications
-               WHERE (recipient_email = :email OR (:is_admin = 1 AND LOWER(recipient_role) = \'admin\'))
+               WHERE recipient_email = :email
              AND read_at = \'\''
         );
         $stmt->execute([
             ':email' => strtolower(trim($email)),
-            ':is_admin' => $isAdmin ? 1 : 0,
         ]);
         return (int) $stmt->fetchColumn();
     }
 
     public function notificationMarkAllReadForUser(string $email, bool $isAdmin): void
     {
+        $this->ensureNotificationsSchema();
+        unset($isAdmin);
         $stmt = $this->pdo()->prepare(
             'UPDATE notifications
              SET read_at = :read_at
-               WHERE (recipient_email = :email OR (:is_admin = 1 AND LOWER(recipient_role) = \'admin\'))
+               WHERE recipient_email = :email
              AND read_at = \'\''
         );
         $stmt->execute([
             ':read_at' => date('c'),
             ':email' => strtolower(trim($email)),
-            ':is_admin' => $isAdmin ? 1 : 0,
         ]);
     }
 
     public function notificationDeleteForUser(int $id, string $email, bool $isAdmin): void
     {
+        $this->ensureNotificationsSchema();
+        unset($isAdmin);
         $stmt = $this->pdo()->prepare(
             'DELETE FROM notifications
              WHERE id = :id
-                             AND (recipient_email = :email OR (:is_admin = 1 AND LOWER(recipient_role) = \'admin\'))'
+                             AND recipient_email = :email'
         );
         $stmt->execute([
             ':id' => $id,
             ':email' => strtolower(trim($email)),
-            ':is_admin' => $isAdmin ? 1 : 0,
         ]);
     }
 
     public function notificationClearForUser(string $email, bool $isAdmin): void
     {
+        $this->ensureNotificationsSchema();
+        unset($isAdmin);
         $stmt = $this->pdo()->prepare(
             'DELETE FROM notifications
-               WHERE recipient_email = :email OR (:is_admin = 1 AND LOWER(recipient_role) = \'admin\')'
+               WHERE recipient_email = :email'
         );
         $stmt->execute([
             ':email' => strtolower(trim($email)),
-            ':is_admin' => $isAdmin ? 1 : 0,
         ]);
+    }
+
+    private function ensureModuleRequestsSchema(): void
+    {
+        $pdo = $this->pdo();
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS module_requests (
+                module TEXT NOT NULL PRIMARY KEY,
+                reason TEXT NOT NULL DEFAULT \'\',
+                requested_by TEXT NOT NULL DEFAULT \'\',
+                requested_at TEXT NOT NULL DEFAULT \'\'
+            )'
+        );
+    }
+
+    private function ensureNotificationsSchema(): void
+    {
+        $pdo = $this->pdo();
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipient_email TEXT NOT NULL DEFAULT \'\',
+                recipient_role TEXT NOT NULL DEFAULT \'\',
+                type TEXT NOT NULL DEFAULT \'info\',
+                message TEXT NOT NULL DEFAULT \'\',
+                created_at TEXT NOT NULL DEFAULT \'\',
+                read_at TEXT NOT NULL DEFAULT \'\'
+            )'
+        );
+
+        $columns = [];
+        $stmt = $pdo->query('PRAGMA table_info(notifications)');
+        if ($stmt !== false) {
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $name = strtolower(trim((string) ($row['name'] ?? '')));
+                if ($name !== '') {
+                    $columns[$name] = true;
+                }
+            }
+        }
+
+        if (!isset($columns['recipient_email'])) {
+            $pdo->exec('ALTER TABLE notifications ADD COLUMN recipient_email TEXT NOT NULL DEFAULT \'\'');
+        }
+        if (!isset($columns['recipient_role'])) {
+            $pdo->exec('ALTER TABLE notifications ADD COLUMN recipient_role TEXT NOT NULL DEFAULT \'\'');
+        }
+        if (!isset($columns['type'])) {
+            $pdo->exec('ALTER TABLE notifications ADD COLUMN type TEXT NOT NULL DEFAULT \'info\'');
+        }
+        if (!isset($columns['message'])) {
+            $pdo->exec('ALTER TABLE notifications ADD COLUMN message TEXT NOT NULL DEFAULT \'\'');
+        }
+        if (!isset($columns['created_at'])) {
+            $pdo->exec('ALTER TABLE notifications ADD COLUMN created_at TEXT NOT NULL DEFAULT \'\'');
+        }
+        if (!isset($columns['read_at'])) {
+            $pdo->exec('ALTER TABLE notifications ADD COLUMN read_at TEXT NOT NULL DEFAULT \'\'');
+        }
     }
 
 

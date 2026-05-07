@@ -973,7 +973,8 @@ final class SettingsController extends BaseController
             $this->redirect('settings');
         }
 
-        $passwordErrors = password_policy_errors($newPassword);
+        $policyLevel = (int) $this->config->get('PASSWORD_POLICY_LEVEL', 3);
+        $passwordErrors = password_policy_errors($newPassword, $policyLevel);
         if ($passwordErrors !== []) {
             Session::setFlash('error', $passwordErrors[0]);
             $this->redirect('settings');
@@ -1372,7 +1373,8 @@ final class SettingsController extends BaseController
             throw new RuntimeException('Account type must be admin or user.');
         }
 
-        $passwordErrors = password_policy_errors($password);
+        $policyLevel = (int) $this->config->get('PASSWORD_POLICY_LEVEL', 3);
+        $passwordErrors = password_policy_errors($password, $policyLevel);
         if ($passwordErrors !== []) {
             throw new RuntimeException($passwordErrors[0]);
         }
@@ -1413,7 +1415,8 @@ final class SettingsController extends BaseController
             throw new RuntimeException('Target user is required.');
         }
 
-        $passwordErrors = password_policy_errors($password);
+        $policyLevel = (int) $this->config->get('PASSWORD_POLICY_LEVEL', 3);
+        $passwordErrors = password_policy_errors($password, $policyLevel);
         if ($passwordErrors !== []) {
             throw new RuntimeException($passwordErrors[0]);
         }

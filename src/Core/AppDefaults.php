@@ -38,6 +38,8 @@ final class AppDefaults
             'APACHE_VHOST_TEMPLATE' => '/etc/vhost-manager/vhost.conf.tpl',
             'VHOST_BASE_DOMAIN' => '',
             'CURL_VERIFY_SSL' => 'true',
+            'PASSWORD_POLICY_LEVEL' => (int) (getenv('VHM_PASSWORD_POLICY_LEVEL') ?: '3'),
+            'ENABLE_INTEGRATIONS' => (bool) filter_var(getenv('VHM_ENABLE_INTEGRATIONS') ?? 'true', FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? true,
         ];
     }
 

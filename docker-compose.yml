@@ -3,7 +3,8 @@ services:
   vhost-manager:
     image: jadgames/vhost-manager:${VHM_IMAGE_TAG:-latest}
     ports:
-      - "80:80"
+      - "80:80"                    # Port 80: created vhosts (normal web traffic)
+      - "${VHM_PORT:-8181}:8181"   # Port 8181 (or custom): Vhost Manager UI
     environment:
       TZ: "${TZ:-Australia/Brisbane}"
       VHM_TRUSTED_PROXIES: "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
@@ -12,6 +13,8 @@ services:
       # Generate a key with: php -r "echo sodium_bin2hex(random_bytes(32)) . PHP_EOL;"
       # Once set, do NOT change or remove this value — it is required to decrypt stored secrets.
       VHM_SECRET_KEY: "${VHM_SECRET_KEY:-}"
+      VHM_PASSWORD_POLICY_LEVEL: "${VHM_PASSWORD_POLICY_LEVEL:-3}"
+      VHM_ENABLE_INTEGRATIONS: "${VHM_ENABLE_INTEGRATIONS:-true}"
     volumes:
       - ./config:/opt/vhost-manager/storage
       - ./sites:/srv/sites
@@ -20,5 +23,12 @@ services:
 
 # Notes:
 # - Copy .env.example to .env, fill in VHM_SECRET_KEY, then run: docker compose --env-file .env up -d
-# - Vhost Manager UI: http://host
+# - Vhost Manager UI: http://host:8181 (or http://host:${VHM_PORT} if VHM_PORT env var is set)
+# - Created vhosts: http://host:80 (or any configured vhost domain)
 # - Keep VHM_ALLOWED_DOCROOT_BASES and vhost-manager volume mounts in sync.
+# - Available env vars:
+#   - VHM_PORT (default 8181): Port for Vhost Manager UI
+#   - VHM_SECRET_KEY: Encryption key for stored secrets (REQUIRED)
+#   - VHM_TIMEZONE (default Australia/Brisbane): Server timezone
+#   - VHM_PASSWORD_POLICY_LEVEL (0-3, default 3): Password complexity requirement
+#   - VHM_ENABLE_INTEGRATIONS (true/false, default true): Show/hide integrations UI

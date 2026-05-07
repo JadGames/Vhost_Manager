@@ -213,7 +213,7 @@ $isSetupComplete = $primaryAdmin !== null
     && trim((string) ($primaryAdmin['email'] ?? '')) !== ''
     && trim((string) ($primaryAdmin['password_hash'] ?? '')) !== '';
 
-$setupRoutes = ['setup', 'setup-proxy', 'setup-dns', 'setup-confirm'];
+$setupRoutes = ['setup', 'setup-proxy', 'setup-dns', 'setup-domain', 'setup-confirm', 'setup-server-ip'];
 
 if (!$isSetupComplete && !in_array($route, $setupRoutes, true)) {
     header('Location: /?route=setup');
@@ -222,6 +222,13 @@ if (!$isSetupComplete && !in_array($route, $setupRoutes, true)) {
 
 if ($isSetupComplete && in_array($route, $setupRoutes, true)) {
     header('Location: /?route=login');
+    exit;
+}
+
+// Block integration routes if integrations are disabled
+$integrationRoutes = ['settings-integrations', 'settings-integrations-action', 'settings-integrations-test', 'settings-integrations-cloudflare-domain-test', 'settings-integrations-server-ip', 'settings-integrations-npm-bootstrap', 'settings-integrations-enable-cloudflare'];
+if (!$config->getBool('ENABLE_INTEGRATIONS', true) && in_array($route, $integrationRoutes, true)) {
+    header('Location: /?route=settings');
     exit;
 }
 
@@ -265,6 +272,15 @@ try {
                 break;
             }
             $setupController->showConfirm();
+            break;
+
+        case 'setup-server-ip':
+            if ($method === 'POST') {
+                $setupController->serverIpAction();
+                break;
+            }
+            header('Location: /?route=setup-proxy');
+            exit;
             break;
 
         case 'login':

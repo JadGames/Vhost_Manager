@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Enable Apache modules
 RUN a2enmod rewrite
+RUN grep -q '^Listen 8181$' /etc/apache2/ports.conf || echo 'Listen 8181' >> /etc/apache2/ports.conf
 
 # Set up app
 WORKDIR /opt/vhost-manager
@@ -44,5 +45,5 @@ RUN mkdir -p storage/data storage/logs \
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 80
+EXPOSE 80 8181
 ENTRYPOINT ["/entrypoint.sh"]

@@ -85,7 +85,10 @@ $isStepTwo = $isNpm && (($proxyStep ?? '1') === '2');
                     <div class="form-row">
                         <div class="form-group" style="margin-bottom: 14px;">
                             <label class="form-label" for="npm_forward_host">Forward URL/Host</label>
-                            <input class="form-input<?= !empty($fe['npm_forward_host']) ? ' is-error' : '' ?>" id="npm_forward_host" type="text" name="npm_forward_host" placeholder="127.0.0.1" value="<?= e((string) ($npmForwardHost ?? '')) ?>">
+                            <div class="app-url-input-row">
+                                <input class="form-input<?= !empty($fe['npm_forward_host']) ? ' is-error' : '' ?>" id="npm_forward_host" type="text" name="npm_forward_host" placeholder="127.0.0.1" value="<?= e((string) ($npmForwardHost ?? '')) ?>">
+                                <button class="btn btn--ghost btn--sm" type="button" id="setup_npm_get_ip">Get IP</button>
+                            </div>
                             <?php if (!empty($fe['npm_forward_host'])): ?><span class="form-field-error"><?= e((string) $fe['npm_forward_host']) ?></span><?php endif; ?>
                         </div>
                         <div class="form-group" style="margin-bottom: 14px;">
@@ -160,6 +163,8 @@ $isStepTwo = $isNpm && (($proxyStep ?? '1') === '2');
     var skipConfirmClose = document.getElementById('setup-proxy-skip-confirm-close');
     var skipConfirmCancel = document.getElementById('setup-proxy-skip-cancel');
     var skipConfirmConfirm = document.getElementById('setup-proxy-skip-confirm');
+    var setupGetIpButton = document.getElementById('setup_npm_get_ip');
+    var setupForwardHostInput = document.getElementById('npm_forward_host');
 
     if (!providerSelect || !providerHint || !npmFields || !genericNote || !submitLabel || !form || !primarySubmit) {
         return;
@@ -209,6 +214,30 @@ $isStepTwo = $isNpm && (($proxyStep ?? '1') === '2');
         return [nameInput, baseUrlInput, adminIdentityInput, adminSecretInput].some(function (input) {
             return input && String(input.value || '').trim() !== '';
         });
+    }
+
+    function requestServerIp() {
+        var tokenInput = form.querySelector('input[name="csrf_token"]');
+        var body = new URLSearchParams();
+        body.set('csrf_token', tokenInput ? tokenInput.value : '');
+
+        return fetch('/?route=setup-server-ip', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        })
+            .then(function (r) {
+                return r.json().catch(function () {
+                    return { ok: false, message: 'Invalid response from server.' };
+                });
+            })
+            .then(function (data) {
+                if (!data || !data.ok || !data.ip) {
+                    throw new Error((data && data.message) ? data.message : 'Unable to detect server IP.');
+                }
+
+                return String(data.ip);
+            });
     }
 
     function applyProviderState() {
@@ -284,6 +313,25 @@ $isStepTwo = $isNpm && (($proxyStep ?? '1') === '2');
             skipInput.value = '1';
             form.appendChild(skipInput);
             form.submit();
+        });
+    }
+
+    if (setupGetIpButton && setupForwardHostInput) {
+        setupGetIpButton.addEventListener('click', function () {
+            setupGetIpButton.disabled = true;
+            setupGetIpButton.textContent = 'Detecting...';
+
+            requestServerIp()
+                .then(function (ip) {
+                    setupForwardHostInput.value = ip;
+                })
+                .catch(function (error) {
+                    window.alert(error && error.message ? error.message : 'Unable to detect server IP.');
+                })
+                .finally(function () {
+                    setupGetIpButton.disabled = false;
+                    setupGetIpButton.textContent = 'Get IP';
+                });
         });
     }
 })();

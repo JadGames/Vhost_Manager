@@ -188,22 +188,42 @@ function merge_docroot_bases(array $stored, array $compose): array
 }
 
 /**
+ * Password policy levels:
+ * 0: No password requirement (can be empty or any length).
+ * 1: Minimum 8 characters.
+ * 2: Minimum 8 characters with uppercase and lowercase.
+ * 3: Minimum 8 characters with uppercase, lowercase, and special characters.
  * @return array<int, string>
  */
-function password_policy_errors(string $password): array
+function password_policy_errors(string $password, int $policyLevel = 3): array
 {
     $errors = [];
 
+    // Level 0: Allow empty or any password
+    if ($policyLevel === 0) {
+        return $errors;
+    }
+
+    // Level 1+: Minimum 8 characters
     if (strlen($password) < 8) {
         $errors[] = 'Password must be at least 8 characters long.';
     }
 
-    if (preg_match('/[A-Z]/', $password) !== 1) {
-        $errors[] = 'Password must include at least one uppercase letter.';
+    // Level 2+: Uppercase and lowercase letters
+    if ($policyLevel >= 2) {
+        if (preg_match('/[A-Z]/', $password) !== 1) {
+            $errors[] = 'Password must include at least one uppercase letter.';
+        }
+        if (preg_match('/[a-z]/', $password) !== 1) {
+            $errors[] = 'Password must include at least one lowercase letter.';
+        }
     }
 
-    if (preg_match('/[^a-zA-Z0-9]/', $password) !== 1) {
-        $errors[] = 'Password must include at least one special character.';
+    // Level 3: Special characters required
+    if ($policyLevel >= 3) {
+        if (preg_match('/[^a-zA-Z0-9]/', $password) !== 1) {
+            $errors[] = 'Password must include at least one special character.';
+        }
     }
 
     return $errors;

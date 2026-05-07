@@ -133,8 +133,10 @@
                                 <span class="notif-dot notif-dot--nav-sub" title="<?= $pendingModuleRequests ?> pending"></span>
                             <?php endif; ?>
                         </a>
+                        <?php if ($enableIntegrations ?? true): ?>
                         <a href="/?route=settings-integrations"
                            class="nav-submenu-item <?= in_array($currentRoute, ['settings-integrations', 'settings-cloudflare', 'settings-cloudflare-domains', 'settings-npm', 'settings-npm-ssl'], true) ? 'is-active' : '' ?>">Integrations</a>
+                        <?php endif; ?>
                         <?php if ($isAdmin): ?>
                         <a href="/?route=logs"
                            class="nav-submenu-item <?= $currentRoute === 'logs' ? 'is-active' : '' ?>">Logs</a>

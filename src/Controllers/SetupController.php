@@ -114,7 +114,8 @@ final class SetupController extends BaseController
             && trim((string) ($pendingSetup['ADMIN_PASSWORD_HASH'] ?? '')) !== '';
 
         if (!$keepPendingPassword) {
-            $passwordErrors = password_policy_errors($password);
+            $policyLevel = (int) $this->config->get('PASSWORD_POLICY_LEVEL', 3);
+            $passwordErrors = password_policy_errors($password, $policyLevel);
             if ($passwordErrors !== []) {
                 $fieldErrors['password'] = $passwordErrors[0];
             } elseif (!hash_equals($password, $confirmPassword)) {
@@ -168,6 +169,11 @@ final class SetupController extends BaseController
 
         if (!$keepPendingPassword) {
             $_SESSION['setup_pending_admin_password'] = $password;
+        }
+
+        // Skip to domain setup if integrations are disabled
+        if (!$this->config->getBool('ENABLE_INTEGRATIONS', true)) {
+            $this->redirect('setup-domain');
         }
 
         $this->redirect('setup-proxy');
@@ -238,6 +244,11 @@ final class SetupController extends BaseController
     {
         if ($this->isSetupComplete()) {
             $this->redirect(Session::isAuthenticated() ? 'dashboard' : 'login');
+        }
+
+        // Skip proxy setup if integrations disabled
+        if (!$this->config->getBool('ENABLE_INTEGRATIONS', true)) {
+            $this->redirect('setup-domain');
         }
 
         $pendingSetup = $_SESSION['setup_pending'] ?? null;
@@ -501,6 +512,11 @@ final class SetupController extends BaseController
         if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
             Session::setFlash('error', 'Invalid CSRF token.');
             $this->redirect('setup-dns');
+        }
+
+        // Skip DNS setup if integrations disabled
+        if (!$this->config->getBool('ENABLE_INTEGRATIONS', true)) {
+            $this->redirect('setup-domain');
         }
 
         $pendingSetup = $_SESSION['setup_pending'] ?? null;
@@ -816,6 +832,33 @@ final class SetupController extends BaseController
         $this->redirect('overview');
     }
 
+    public function serverIpAction(): void
+    {
+        header('Content-Type: application/json');
+
+        if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'message' => 'Invalid CSRF token.']);
+            return;
+        }
+
+        $pendingSetup = $_SESSION['setup_pending'] ?? null;
+        if (!is_array($pendingSetup)) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'message' => 'Setup session is not active.']);
+            return;
+        }
+
+        $ip = $this->detectServerIp();
+        if ($ip === null) {
+            http_response_code(422);
+            echo json_encode(['ok' => false, 'message' => 'Unable to detect a valid server IPv4 address.']);
+            return;
+        }
+
+        echo json_encode(['ok' => true, 'ip' => $ip]);
+    }
+
     private function isSetupComplete(): bool
     {
         $primary = $this->settingsStore->userGetPrimary();
@@ -866,6 +909,52 @@ final class SetupController extends BaseController
         $body = $result['body'] ?? null;
         if (!is_array($body) || trim((string) ($body['token'] ?? '')) === '') {
             return 'Authentication token was not returned by NPM.';
+        }
+
+        return null;
+    }
+
+    private function detectServerIp(): ?string
+    {
+        // Prefer the outbound source address first.
+        $output = [];
+        @exec('ip route get 1.1.1.1 2>/dev/null', $output);
+        foreach ($output as $line) {
+            if (preg_match('/\bsrc\s+([\d.]+)/', $line, $m)) {
+                $ip = $m[1];
+                if (
+                    filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+                    && !in_array($ip, ['127.0.0.1', '0.0.0.0'], true)
+                ) {
+                    return $ip;
+                }
+            }
+        }
+
+        // Fallback to interface list.
+        $output = [];
+        @exec('hostname -I 2>/dev/null', $output);
+        foreach ($output as $line) {
+            foreach (explode(' ', trim($line)) as $candidate) {
+                $candidate = trim($candidate);
+                if (
+                    $candidate !== ''
+                    && filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+                    && !in_array($candidate, ['127.0.0.1', '0.0.0.0'], true)
+                ) {
+                    return $candidate;
+                }
+            }
+        }
+
+        // Last resort from hostname resolution.
+        $resolvedHost = @gethostbyname((string) gethostname());
+        if (
+            is_string($resolvedHost)
+            && filter_var($resolvedHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+            && !in_array($resolvedHost, ['127.0.0.1', '0.0.0.0'], true)
+        ) {
+            return $resolvedHost;
         }
 
         return null;

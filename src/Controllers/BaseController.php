@@ -24,6 +24,7 @@ abstract class BaseController
         $csrfToken = $_SESSION['csrf_token'] ?? '';
         $cspNonce = $_SERVER['CSP_NONCE'] ?? '';
         $appVersion = (string) $this->config->get('APP_VERSION', 'dev');
+        $enableIntegrations = $this->config->getBool('ENABLE_INTEGRATIONS', true);
 
         extract($data, EXTR_OVERWRITE);
         $username = $_SESSION['username'] ?? null;

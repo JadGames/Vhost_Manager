@@ -222,8 +222,10 @@
             var title = String(card.getAttribute('data-module-title') || '').toLowerCase();
             var description = String(card.getAttribute('data-module-description') || '').toLowerCase();
             var enabled = String(card.getAttribute('data-module-enabled') || '0') === '1';
+            var requestedBadge = card.querySelector('.apache-module-card__badge.is-requested');
             var requested = card.classList.contains('is-requested')
-                || String(card.getAttribute('data-module-requested') || '0') === '1';
+                || String(card.getAttribute('data-module-requested') || '0') === '1'
+                || !!requestedBadge;
 
             var matchesText = query === ''
                 || title.indexOf(query) !== -1
@@ -240,6 +242,18 @@
             if (visible) {
                 visibleCount += 1;
             }
+        });
+
+        var ordered = cards.slice().sort(function (a, b) {
+            var aRequested = a.classList.contains('is-requested') ? 1 : 0;
+            var bRequested = b.classList.contains('is-requested') ? 1 : 0;
+            if (aRequested !== bRequested) {
+                return bRequested - aRequested;
+            }
+            return 0;
+        });
+        ordered.forEach(function (card) {
+            list.appendChild(card);
         });
 
         if (empty) {

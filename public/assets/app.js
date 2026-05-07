@@ -185,7 +185,7 @@
                 if (window.location.href.indexOf('settings-apache-modules') !== -1 && lastSeenNotifIds !== null) {
                     var newStatusChange = items.some(function (item) {
                         return lastSeenNotifIds.indexOf(item.id) === -1 &&
-                            (item.type === 'module_request_declined' || item.type === 'module_request_approved');
+                            (item.type === 'module_request_declined' || item.type === 'module_request_approved' || item.type === 'module_request');
                     });
                     if (newStatusChange) {
                         window.location.reload();
@@ -194,7 +194,7 @@
                 }
                 lastSeenNotifIds = items.map(function (i) { return i.id; });
 
-                setNotificationDot(items.length);
+                setNotificationDot(Number(payload.unreadCount || 0));
                 renderNotifications(items);
             })
             .catch(function () {
@@ -267,13 +267,18 @@
     if (notificationsToggle && notificationsPanel) {
         notificationsToggle.addEventListener('click', function (e) {
             e.preventDefault();
+            e.stopPropagation();
             var willOpen = notificationsPanel.hidden;
             notificationsPanel.hidden = !willOpen;
             notificationsToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+            if (willOpen) {
+                pollNotifications();
+            }
         });
 
         if (notificationsList) {
             notificationsList.addEventListener('click', function (e) {
+                e.stopPropagation();
                 var clearBtn = e.target.closest('[data-notification-clear]');
                 if (!clearBtn) {
                     var tile = e.target.closest('.notifications-item--actionable');
@@ -299,9 +304,14 @@
         if (notificationsClearAll) {
             notificationsClearAll.addEventListener('click', function (e) {
                 e.preventDefault();
+                e.stopPropagation();
                 clearAllNotifications();
             });
         }
+
+        notificationsPanel.addEventListener('click', function (e) {
+            e.stopPropagation();
+        });
 
         document.addEventListener('click', function (e) {
             if (!notificationsWrap) {

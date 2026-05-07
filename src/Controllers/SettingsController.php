@@ -470,7 +470,9 @@ final class SettingsController extends BaseController
                 $actor !== '' ? $actor : 'unknown user',
                 $reason !== '' ? ' - ' . $reason : ''
             );
-            $this->settingsStore->notificationCreate($message, 'module_request', '', 'admin');
+            foreach ($this->adminNotificationRecipients() as $adminEmail) {
+                $this->settingsStore->notificationCreate($message, 'module_request', $adminEmail, '');
+            }
 
             Session::setFlash('success', "Module request for {$module} submitted.");
             $this->redirect('settings-apache-modules');
@@ -1687,6 +1689,30 @@ final class SettingsController extends BaseController
         $accountType = strtolower(trim((string) ($record['account_type'] ?? 'user')));
 
         return !empty($record['is_primary']) || $accountType === 'admin';
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function adminNotificationRecipients(): array
+    {
+        $recipients = [];
+        foreach ($this->settingsStore->userGetAll() as $user) {
+            $email = strtolower(trim((string) ($user['email'] ?? '')));
+            if ($email === '') {
+                continue;
+            }
+
+            $isPrimary = (bool) ($user['is_primary'] ?? false);
+            $accountType = strtolower(trim((string) ($user['account_type'] ?? 'user')));
+            $isActive = (bool) ($user['active'] ?? false);
+
+            if ($isPrimary || ($isActive && $accountType === 'admin')) {
+                $recipients[$email] = true;
+            }
+        }
+
+        return array_keys($recipients);
     }
 
     private function isCurrentPrimaryAdmin(): bool

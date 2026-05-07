@@ -8,7 +8,11 @@
 
     <div class="auth-box">
         <h1 class="auth-title">Setup: Admin Account</h1>
-        <p class="auth-subtitle">Step 1 of 3: Create your first admin account</p>
+        <?php 
+            $totalSteps = ($enableIntegrations ?? true) ? 5 : 3;
+            $stepNumber = 1;
+        ?>
+        <p class="auth-subtitle">Step <?= $stepNumber ?> of <?= $totalSteps ?>: Create your first admin account</p>
 
         <form class="form" method="post" action="/?route=setup" autocomplete="off">
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">
@@ -30,7 +34,7 @@
             <div class="form-group">
                 <label class="form-label" for="password">Admin Password</label>
                 <div class="secret-input-wrap">
-                    <input class="form-input<?= !empty($fe['password']) ? ' is-error' : '' ?>" id="password" type="password" name="password" placeholder="At least 8 characters" data-password-policy-list="setup-password-policy">
+                    <input class="form-input<?= !empty($fe['password']) ? ' is-error' : '' ?>" id="password" type="password" name="password" placeholder="<?= ($passwordPolicyLevel ?? 3) === 0 ? 'Optional' : 'Enter password' ?>" data-password-policy-list="setup-password-policy">
                     <button class="secret-toggle-btn" type="button" data-secret-target="password" aria-controls="password" aria-label="Show password" aria-pressed="false">
                         <i class="fa-solid fa-eye"></i>
                     </button>
@@ -40,9 +44,9 @@
                 <?php endif; ?>
                 <?php if (!empty($fe['password'])): ?><span class="form-field-error"><?= e((string) $fe['password']) ?></span><?php endif; ?>
                 <ul id="setup-password-policy" class="password-policy" aria-live="polite">
-                    <li data-rule="length">8 chars long</li>
-                    <li data-rule="uppercase">At least 1 uppercase</li>
-                    <li data-rule="special">At least one special char</li>
+                    <?php foreach ($passwordPolicyRequirements ?? [] as $req): ?>
+                        <li data-rule="<?= e((string) $req['rule']) ?>"><?= e((string) $req['text']) ?></li>
+                    <?php endforeach; ?>
                 </ul>
             </div>
 
@@ -64,7 +68,7 @@
                         <option value="http" <?= (($appUrlScheme ?? 'http') === 'http') ? 'selected' : '' ?>>http://</option>
                         <option value="https" <?= (($appUrlScheme ?? 'http') === 'https') ? 'selected' : '' ?>>https://</option>
                     </select>
-                    <input class="form-input<?= !empty($fe['app_url']) ? ' is-error' : '' ?>" id="app_url_hostpath" type="text" name="app_url_hostpath" value="<?= e((string) ($appUrlHostPath ?? 'localhost:8080')) ?>" placeholder="localhost:8080">
+                    <input class="form-input<?= !empty($fe['app_url']) ? ' is-error' : '' ?>" id="app_url_hostpath" type="text" name="app_url_hostpath" value="<?= e((string) ($appUrlHostPath ?? 'localhost:8181')) ?>" placeholder="localhost:8181">
                 </div>
                 <?php if (!empty($fe['app_url'])): ?><span class="form-field-error"><?= e((string) $fe['app_url']) ?></span><?php else: ?><span class="form-hint">URL users will visit for Vhost Manager.</span><?php endif; ?>
             </div>
@@ -88,7 +92,7 @@
 
             <div style="margin-top: 4px;">
                 <button class="btn btn--primary btn--full" type="submit">
-                    Continue to Integrations
+                    <?= ($enableIntegrations ?? true) ? 'Continue to Integrations' : 'Continue Setup' ?>
                     <i class="fa-solid fa-arrow-right"></i>
                 </button>
             </div>

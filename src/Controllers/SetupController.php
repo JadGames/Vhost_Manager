@@ -53,6 +53,8 @@ final class SetupController extends BaseController
             'defaultDocrootBase' => (string) ($pendingSetup['DEFAULT_DOCROOT_BASE'] ?? $this->config->get('DEFAULT_DOCROOT_BASE', '/var/www')),
             'hasPendingPassword' => trim((string) ($pendingSetup['ADMIN_PASSWORD_HASH'] ?? '')) !== '',
             'fieldErrors' => Session::consumeFieldErrors(),
+            'passwordPolicyLevel' => (int) $this->config->get('PASSWORD_POLICY_LEVEL', 3),
+            'passwordPolicyRequirements' => \App\Core\password_policy_requirements((int) $this->config->get('PASSWORD_POLICY_LEVEL', 3)),
         ]);
     }
 
@@ -564,27 +566,21 @@ final class SetupController extends BaseController
             $this->redirect('setup');
         }
 
-        $hasCfIntegration = isset($_SESSION['setup_pending_dns']) &&
-            is_array($_SESSION['setup_pending_dns']) &&
-            (string) ($_SESSION['setup_pending_dns']['provider'] ?? '') === 'cloudflare';
-
         $pending = $_SESSION['setup_pending_domain'] ?? [];
         if (!is_array($pending)) { $pending = []; }
 
+        $setupDomains = $pending['domains'] ?? [];
+        if (!is_array($setupDomains)) { $setupDomains = []; }
+
         $this->render('auth/setup-domain.php', [
-            'csrfToken'       => $this->csrf->token(),
-            'hasCfIntegration'=> $hasCfIntegration,
-            'fieldErrors'     => Session::consumeFieldErrors(),
-            'domain'          => (string) ($pending['domain'] ?? ''),
-            'cfZoneId'        => (string) ($pending['cf_zone_id'] ?? ''),
-            'cfRecordIp'      => (string) ($pending['cf_record_ip'] ?? ''),
-            'cfTtl'           => (int) ($pending['cf_ttl'] ?? 120),
-            'cfProxied'       => (bool) ($pending['cf_proxied'] ?? true),
+            'csrfToken'      => $this->csrf->token(),
+            'fieldErrors'    => Session::consumeFieldErrors(),
+            'setupDomains'   => $setupDomains,
         ]);
     }
 
     /**
-     * Process page 4: optionally save first domain, redirect to confirm
+     * Process page 4: collect domains, store in session, redirect to confirm
      */
     public function completeDomain(): void
     {
@@ -598,49 +594,31 @@ final class SetupController extends BaseController
         }
 
         if (isset($_POST['skip'])) {
-            unset($_SESSION['setup_pending_domain']);
+            $_SESSION['setup_pending_domain'] = ['domains' => []];
             $this->redirect('setup-confirm');
         }
 
-        $domain = strtolower(trim((string) ($_POST['domain'] ?? '')));
-        if (!\App\Security\DomainValidator::isValid($domain)) {
-            Session::setFieldErrors(['domain' => 'Domain must be a valid FQDN (e.g. example.com).']);
-            $this->redirect('setup-domain');
-        }
+        $domainsRaw = $_POST['domains'] ?? [];
+        $domainsRaw = is_array($domainsRaw) ? $domainsRaw : [];
 
-        $hasCfIntegration = isset($_SESSION['setup_pending_dns']) &&
-            is_array($_SESSION['setup_pending_dns']) &&
-            (string) ($_SESSION['setup_pending_dns']['provider'] ?? '') === 'cloudflare';
-
-        $domainData = [
-            'domain'     => $domain,
-            'updated_at' => date('c'),
-        ];
-
-        if ($hasCfIntegration) {
-            $zoneId   = trim((string) ($_POST['cf_zone_id'] ?? ''));
-            $apiToken = trim((string) ($_POST['cf_api_token'] ?? ''));
-            $recordIp = trim((string) ($_POST['cf_record_ip'] ?? ''));
-            $proxied  = isset($_POST['cf_proxied']) && (string) $_POST['cf_proxied'] === '1';
-            $ttl      = max(1, min(86400, (int) ($_POST['cf_ttl'] ?? 120)));
-
-            if ($zoneId !== '' && preg_match('/^[a-f0-9]{32}$/i', $zoneId) !== 1) {
-                Session::setFieldErrors(['cf_zone_id' => 'Zone ID must be a 32-character hex string.']);
-                $this->redirect('setup-domain');
+        $setupDomains = [];
+        foreach ($domainsRaw as $domainInput) {
+            $domain = strtolower(trim((string) $domainInput));
+            if ($domain === '') {
+                continue;
             }
-            if ($recordIp !== '' && filter_var($recordIp, FILTER_VALIDATE_IP) === false) {
-                Session::setFieldErrors(['cf_record_ip' => 'Record IP must be a valid IP address.']);
+
+            if (!\App\Security\DomainValidator::isValid($domain)) {
+                Session::setFieldErrors(['domain' => "Domain '$domain' is not a valid FQDN (e.g. example.com)."]);
                 $this->redirect('setup-domain');
             }
 
-            $domainData['cf_zone_id']   = $zoneId;
-            $domainData['cf_api_token'] = $apiToken;
-            $domainData['cf_record_ip'] = $recordIp;
-            $domainData['cf_proxied']   = $proxied ? 1 : 0;
-            $domainData['cf_ttl']       = $ttl;
+            if (!in_array($domain, $setupDomains, true)) {
+                $setupDomains[] = $domain;
+            }
         }
 
-        $_SESSION['setup_pending_domain'] = $domainData;
+        $_SESSION['setup_pending_domain'] = ['domains' => $setupDomains];
         $this->redirect('setup-confirm');
     }
 
@@ -687,6 +665,7 @@ final class SetupController extends BaseController
             'app_https'            => ($pendingSetup['APP_HTTPS'] ?? 'false') === 'true',
             'allowed_docroot_bases'=> $pendingSetup['ALLOWED_DOCROOT_BASES'] ?? '',
             'default_docroot_base' => $pendingSetup['DEFAULT_DOCROOT_BASE'] ?? '',
+            'setup_domains'        => ($_SESSION['setup_pending_domain']['domains'] ?? []),
             'proxy_integration'    => $proxyIntegration,
             'dns_integration'      => $dnsIntegration,
             'proxy_provider_label' => $proxyProviderLabel,

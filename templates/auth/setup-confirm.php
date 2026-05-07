@@ -8,7 +8,10 @@
 
     <div class="auth-box">
         <h1 class="auth-title">Setup: Review & Confirm</h1>
-        <p class="auth-subtitle">Step 5 of 5: Review your settings</p>
+        <?php 
+            $totalSteps = ($enableIntegrations ?? true) ? 5 : 3;
+        ?>
+        <p class="auth-subtitle">Step <?= $totalSteps ?> of <?= $totalSteps ?>: Review your settings</p>
 
         <div class="confirm-card">
             <h3 class="confirm-card-title">Admin Account</h3>
@@ -39,6 +42,17 @@
             </div>
         </div>
 
+        <?php if (!empty($summary['setup_domains']) && is_array($summary['setup_domains']) && count($summary['setup_domains']) > 0): ?>
+        <div class="confirm-card">
+            <h3 class="confirm-card-title">Domains</h3>
+            <div class="confirm-grid">
+                <strong>Added Domains:</strong>
+                <span><?= e(implode(', ', array_map(fn($d) => (string) $d, $summary['setup_domains']))) ?></span>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if (($enableIntegrations ?? true)): ?>
         <div class="confirm-card">
             <h3 class="confirm-card-title">Integrations</h3>
             <div class="confirm-grid">
@@ -69,6 +83,7 @@
                 <?php endif; ?>
             </div>
         </div>
+        <?php endif; ?>
 
         <form class="form" method="post" action="/?route=setup-confirm" autocomplete="off">
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">

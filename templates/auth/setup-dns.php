@@ -9,7 +9,11 @@
 
     <div class="auth-box">
         <h1 class="auth-title">Setup: DNS Integration</h1>
-        <p class="auth-subtitle">Step 3 of 5: Configure DNS provider (optional)</p>
+        <?php 
+            $totalSteps = ($enableIntegrations ?? true) ? 5 : 3;
+            $stepNumber = ($enableIntegrations ?? true) ? 3 : 1;
+        ?>
+        <p class="auth-subtitle">Step <?= $stepNumber ?> of <?= $totalSteps ?>: Configure DNS provider (optional)</p>
 
         <form class="form" method="post" action="/?route=setup-dns" autocomplete="off">
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">

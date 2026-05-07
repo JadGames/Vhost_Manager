@@ -17,6 +17,7 @@
             <div class="overview-stat-label">Virtual Hosts</div>
         </div>
     </div>
+    <?php if (($enableIntegrations ?? true)): ?>
     <div class="overview-stat-card">
         <div class="overview-stat-icon is-info">
             <i class="fa-solid fa-puzzle-piece"></i>
@@ -26,6 +27,7 @@
             <div class="overview-stat-label">Integrations</div>
         </div>
     </div>
+    <?php endif; ?>
     <?php if (!empty($isAdmin)): ?>
     <div class="overview-stat-card">
         <div class="overview-stat-icon is-warning">

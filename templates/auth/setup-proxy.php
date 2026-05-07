@@ -13,7 +13,11 @@ $isStepTwo = $isNpm && (($proxyStep ?? '1') === '2');
 
     <div class="auth-box">
         <h1 class="auth-title">Setup: Proxy Integration</h1>
-        <p class="auth-subtitle">Step 2 of 4: Configure Reverse Proxy (optional)</p>
+        <?php 
+            $totalSteps = ($enableIntegrations ?? true) ? 5 : 3;
+            $stepNumber = ($enableIntegrations ?? true) ? 2 : 1;
+        ?>
+        <p class="auth-subtitle">Step <?= $stepNumber ?> of <?= $totalSteps ?>: Configure Reverse Proxy (optional)</p>
 
         <form class="form" method="post" action="/?route=setup-proxy" autocomplete="off">
             <input type="hidden" name="csrf_token" value="<?= e((string) $csrfToken) ?>">

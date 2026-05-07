@@ -228,3 +228,33 @@ function password_policy_errors(string $password, int $policyLevel = 3): array
 
     return $errors;
 }
+
+/**
+ * Get password policy requirement rules for UI display
+ * Returns an array of requirements that should be displayed to the user
+ * @return array<int, array{rule: string, text: string}>
+ */
+function password_policy_requirements(int $policyLevel = 3): array
+{
+    $requirements = [];
+
+    if ($policyLevel === 0) {
+        return []; // No requirements to display
+    }
+
+    // Level 1+: Minimum 8 characters
+    $requirements[] = ['rule' => 'length', 'text' => '8 chars long'];
+
+    // Level 2+: Uppercase and lowercase letters
+    if ($policyLevel >= 2) {
+        $requirements[] = ['rule' => 'uppercase', 'text' => 'At least 1 uppercase'];
+        $requirements[] = ['rule' => 'lowercase', 'text' => 'At least 1 lowercase'];
+    }
+
+    // Level 3: Special characters required
+    if ($policyLevel >= 3) {
+        $requirements[] = ['rule' => 'special', 'text' => 'At least one special char'];
+    }
+
+    return $requirements;
+}

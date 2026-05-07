@@ -78,6 +78,7 @@
     </div>
 
     <!-- Integrations tile -->
+    <?php if (($enableIntegrations ?? true)): ?>
     <div class="settings-tile">
         <div class="settings-tile__header">
             <div class="settings-tile__header-left">
@@ -131,6 +132,7 @@
             </div>
         <?php endif; ?>
     </div>
+    <?php endif; ?>
 
     <!-- General Settings tile -->
     <?php if (!empty($isAdmin)): ?>

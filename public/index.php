@@ -356,6 +356,25 @@ try {
             exit;
             break;
 
+        case 'domains-delete':
+            Session::requireAuth();
+            if ($method === 'POST') {
+                $vhostController->deleteDomain();
+                break;
+            }
+            header('Location: /?route=domains');
+            exit;
+            break;
+
+        case 'domains-edit':
+            Session::requireAuth();
+            if ($method === 'GET') {
+                $vhostController->editDomainAction();
+                exit;
+            }
+            http_response_code(405);
+            exit;
+
         case 'vhosts':
             Session::requireAuth();
             $vhostController->dashboard();

@@ -413,6 +413,65 @@ final class VhostController extends BaseController
         echo json_encode(['ok' => true, 'domain' => $domain]);
     }
 
+        public function deleteDomain(): void
+        {
+            if (!$this->csrf->validate($_POST['csrf_token'] ?? null)) {
+                Session::setFlash('error', 'Invalid CSRF token.');
+                $this->redirect('domains');
+            }
+
+            $domain = strtolower(trim((string) ($_POST['domain'] ?? '')));
+            if (!\App\Security\DomainValidator::isValid($domain)) {
+                Session::setFlash('error', 'Invalid domain.');
+                $this->redirect('domains');
+            }
+
+            try {
+                $this->settingsStore->domainDelete($domain);
+                $this->settingsStore->syncCfDomainsJson();
+                Session::setFlash('success', 'Domain deleted successfully.');
+            } catch (\RuntimeException $e) {
+                Session::setFlash('error', 'Failed to delete domain: ' . $e->getMessage());
+            }
+
+            $this->redirect('domains');
+        }
+
+        public function editDomainAction(): void
+        {
+            header('Content-Type: application/json');
+
+            $domain = strtolower(trim((string) ($_GET['domain'] ?? '')));
+            if (!\App\Security\DomainValidator::isValid($domain)) {
+                http_response_code(400);
+                echo json_encode(['ok' => false, 'message' => 'Invalid domain.']);
+                return;
+            }
+
+            $domainData = $this->settingsStore->domainGet($domain);
+            if ($domainData === null) {
+                http_response_code(404);
+                echo json_encode(['ok' => false, 'message' => 'Domain not found.']);
+                return;
+            }
+
+            $response = [
+                'ok' => true,
+                'domain' => $domainData['domain'] ?? '',
+            ];
+
+            if ($this->hasProviderIntegration('cloudflare') && is_array($domainData['cloudflare'] ?? null)) {
+                $cf = $domainData['cloudflare'];
+                $response['cf_zone_id'] = $cf['zone_id'] ?? '';
+                $response['cf_api_token'] = $cf['api_token'] ?? '';
+                $response['cf_record_ip'] = $cf['record_ip'] ?? '';
+                $response['cf_proxied'] = $cf['proxied'] ?? false;
+                $response['cf_ttl'] = $cf['ttl'] ?? 120;
+            }
+
+            echo json_encode($response);
+        }
+
     private function postBool(string $key): bool
     {
         return isset($_POST[$key]) && (string) $_POST[$key] === '1';

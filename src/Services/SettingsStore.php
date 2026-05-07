@@ -896,6 +896,27 @@ final class SettingsStore
                 requested_at TEXT NOT NULL DEFAULT \'\'
             )'
         );
+
+        $columns = [];
+        $stmt = $pdo->query('PRAGMA table_info(module_requests)');
+        if ($stmt !== false) {
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $name = strtolower(trim((string) ($row['name'] ?? '')));
+                if ($name !== '') {
+                    $columns[$name] = true;
+                }
+            }
+        }
+
+        if (!isset($columns['reason'])) {
+            $pdo->exec('ALTER TABLE module_requests ADD COLUMN reason TEXT NOT NULL DEFAULT \'\'');
+        }
+        if (!isset($columns['requested_by'])) {
+            $pdo->exec('ALTER TABLE module_requests ADD COLUMN requested_by TEXT NOT NULL DEFAULT \'\'');
+        }
+        if (!isset($columns['requested_at'])) {
+            $pdo->exec('ALTER TABLE module_requests ADD COLUMN requested_at TEXT NOT NULL DEFAULT \'\'');
+        }
     }
 
     private function ensureNotificationsSchema(): void

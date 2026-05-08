@@ -4,12 +4,19 @@ ARG VHM_VERSION=dev
 ENV VHM_VERSION=${VHM_VERSION}
 LABEL org.opencontainers.image.version=${VHM_VERSION}
 
-# Install system deps and PHP extensions
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libsqlite3-dev \
-        sudo \
-    && docker-php-ext-install pdo pdo_sqlite \
-    && rm -rf /var/lib/apt/lists/*
+# Install system deps and PHP extensions.
+# Debian mirrors can briefly desync during security repo updates, so retry.
+RUN set -eux; \
+    for attempt in 1 2 3 4 5 6; do \
+        apt-get update && apt-get install -y --no-install-recommends \
+            libsqlite3-dev \
+            sudo && break; \
+        echo "apt install attempt ${attempt} failed; retrying..."; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+    done; \
+    docker-php-ext-install pdo pdo_sqlite; \
+    rm -rf /var/lib/apt/lists/*
 
 # Enable Apache modules
 RUN a2enmod rewrite

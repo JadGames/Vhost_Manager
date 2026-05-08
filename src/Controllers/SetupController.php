@@ -54,7 +54,7 @@ final class SetupController extends BaseController
             'hasPendingPassword' => trim((string) ($pendingSetup['ADMIN_PASSWORD_HASH'] ?? '')) !== '',
             'fieldErrors' => Session::consumeFieldErrors(),
             'passwordPolicyLevel' => (int) $this->config->get('PASSWORD_POLICY_LEVEL', 3),
-            'passwordPolicyRequirements' => \App\Core\password_policy_requirements((int) $this->config->get('PASSWORD_POLICY_LEVEL', 3)),
+            'passwordPolicyRequirements' => password_policy_requirements((int) $this->config->get('PASSWORD_POLICY_LEVEL', 3)),
         ]);
     }
 

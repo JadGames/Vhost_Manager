@@ -16,3 +16,5 @@ favicon_io.zip
 .release/*.sqlite
 bin/release-manager.py
 bin/__pycache__/
+bin/local-docker-run.sh
+dokcer/
